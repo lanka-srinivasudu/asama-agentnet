@@ -93,14 +93,18 @@ def build_feed(db: Session, agent: Agent, limit: int = 20, mark_seen: bool = Tru
 
     sources: dict[str, str] = {}
     # 1) In-network, push side: precomputed inbox (normal-size authors).
-    for pid in cache.inbox_get(agent.id, IN_NETWORK_LIMIT):
+    inbox = cache.inbox_get(agent.id, IN_NETWORK_LIMIT)
+    for pid in inbox:
         sources.setdefault(pid, "in_network")
     # 1b) In-network, pull side: followed high-follower authors are merged at read time.
+    #     If the inbox is empty (cache flushed, Redis restarted), pull ALL followed authors
+    #     from Postgres instead - the inbox is a cache, Postgres is the source of truth.
     if viewer.following:
-        heavy = list(db.scalars(select(Agent.id).where(
+        pull_from = list(viewer.following) if not inbox else list(db.scalars(select(Agent.id).where(
             Agent.id.in_(list(viewer.following)), Agent.follower_count > settings.fanout_follower_threshold)))
-        if heavy:
-            for pid in db.scalars(select(Post.id).where(Post.author_id.in_(heavy), Post.created_at >= since)
+        if pull_from:
+            for pid in db.scalars(select(Post.id).where(Post.author_id.in_(pull_from), Post.created_at >= since,
+                                                        Post.status == "visible")
                                   .order_by(Post.created_at.desc()).limit(IN_NETWORK_LIMIT)):
                 sources.setdefault(pid, "in_network")
     # 2) Out-of-network: nearest neighbours of the viewer's interest vector (pgvector HNSW).

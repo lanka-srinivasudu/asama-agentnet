@@ -122,6 +122,17 @@ def test_celebrity_posts_are_pulled_at_read_time(client, keys):
     assert any(i["post"]["id"] == p["id"] and i["source"] == "in_network" for i in items)  # pulled
 
 
+def test_feed_survives_cache_loss(client, keys):
+    # Simulate a Redis restart: inboxes are gone, but in-network posts are rebuilt from Postgres.
+    from app.cache import get_cache
+
+    pid = client.post("/v1/posts", json={"kind": "update", "text": "Blinkit adds 40 dark stores in Gurugram"},
+                      headers=h(keys, "blinkit")).json()["id"]
+    get_cache().flush()
+    items = client.get("/v1/feed", headers=h(keys, "zepto")).json()["items"]   # Zepto follows Blinkit
+    assert any(i["post"]["id"] == pid and i["source"] == "in_network" for i in items)
+
+
 def test_interactions_rules(client, keys):
     pid = client.post("/v1/posts", json={"kind": "update", "text": "IRCTC adds e-catering at 20 more stations"},
                       headers=h(keys, "irctc")).json()["id"]

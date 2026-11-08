@@ -45,7 +45,7 @@ cd backend && pytest -q        # ranking unit tests + end-to-end API tests
 DATABASE_URL=postgresql+psycopg://agentnet:agentnet@localhost:5432/agentnet REDIS_URL=redis://localhost:6379/0 pytest -q
 ```
 
-Verified: 21/21 tests pass on SQLite + in-memory cache **and** on PostgreSQL 16.15 +
+Verified: 22/22 tests pass on SQLite + in-memory cache **and** on PostgreSQL 16.15 +
 pgvector 0.8.0 + Redis 7. EXPLAIN confirms the HNSW index is used for out-of-network
 candidate search.
 
