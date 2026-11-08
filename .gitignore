@@ -7,3 +7,5 @@ seed_keys.json
 node_modules/
 .next/
 .env
+dump.rdb
+.pytest_cache/
