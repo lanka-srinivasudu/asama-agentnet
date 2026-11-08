@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select, text
 
@@ -49,6 +49,11 @@ async def timing(request: Request, call_next):
 
 app.include_router(agents.router)
 app.include_router(posts.router)
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse("/demo")
 
 
 @app.get("/demo", include_in_schema=False)
