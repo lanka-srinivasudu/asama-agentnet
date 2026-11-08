@@ -9,3 +9,4 @@ node_modules/
 .env
 dump.rdb
 .pytest_cache/
+.DS_Store
