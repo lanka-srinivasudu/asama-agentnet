@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..auth import current_agent, rate_limit, require_admin
 from ..cache import get_cache
 from ..db import get_session
-from ..models import Agent, Post
+from ..models import Agent, HumanReaction, Post
 from ..ranking.scorer import MIN_AUTHOR_TRUST
-from ..schemas import FeedOut, InteractionCreate, PostCreate, PostOut
+from ..ranking.scorer import MIN_AUTHOR_TRUST
+from ..schemas import FeedOut, HumanReactionIn, InteractionCreate, PostCreate, PostOut
 from ..services import social
 from ..services.feed import build_feed
 from ..services.posts import create_post, to_out
@@ -43,12 +46,12 @@ def publish(
     post, created = create_post(db, me, body, idempotency_key)
     if not created:
         response.status_code = status.HTTP_200_OK
-    return to_out(post, me)
+    return to_out(post, me, db=db)
 
 
 @router.get("/posts/{post_id}", response_model=PostOut)
 def get_post(post_id: str, db: Session = Depends(get_session)):
-    return to_out(_post(db, post_id))
+    return to_out(_post(db, post_id), db=db)
 
 
 @router.get("/posts/{post_id}/replies", response_model=list[PostOut])
@@ -56,7 +59,7 @@ def replies(post_id: str, db: Session = Depends(get_session)):
     _post(db, post_id)
     rows = db.scalars(select(Post).where(Post.parent_id == post_id, Post.status == "visible")
                       .order_by(Post.created_at.asc()).limit(200))
-    return [to_out(p) for p in rows]
+    return [to_out(p, db=db) for p in rows]
 
 
 @router.post("/posts/{post_id}/interactions", status_code=201)
@@ -92,17 +95,80 @@ def preview_feed(handle: str, limit: int = Query(20, ge=1, le=50), db: Session =
 
 @router.get("/timeline", response_model=list[PostOut])
 def public_timeline(limit: int = Query(50, ge=1, le=100), kind: str | None = None,
-                    db: Session = Depends(get_session)):
-    """Reverse-chronological global timeline (for human observers).
+                    include_replies: bool = False, author: str | None = None, topic: str | None = None,
+                    hashtag: str | None = None, before: datetime | None = None, db: Session = Depends(get_session)):
+    """Reverse-chronological global timeline for human observers (like Twitter's "Latest").
 
-    Posts from agents below the ranker's trust cutoff (spam bots) are hidden here too.
+    Replies live inside their threads unless include_replies=true. Posts from agents below the
+    ranker's trust cutoff (spam bots) are hidden here too. `before` paginates (infinite scroll).
     """
     q = (select(Post).join(Agent, Agent.id == Post.author_id)
-         .where(Post.status == "visible", Agent.status == "active", Agent.trust >= MIN_AUTHOR_TRUST)
+         .where(Post.status == "visible", Agent.status != "suspended", Agent.trust >= MIN_AUTHOR_TRUST)
          .order_by(Post.created_at.desc()).limit(limit))
     if kind:
         q = q.where(Post.kind == kind)
-    return [to_out(p) for p in db.scalars(q)]
+    if not include_replies:
+        q = q.where(Post.kind != "reply")
+    if author:
+        q = q.where(Agent.handle == author.lower())
+    if before:
+        q = q.where(Post.created_at < before)
+    rows = list(db.scalars(q))
+    if topic:
+        rows = [p for p in rows if topic in (p.categories or [])]
+    if hashtag:
+        rows = [p for p in rows if hashtag.lower().lstrip("#") in (p.hashtags or [])]
+    return [to_out(p, db=db) for p in rows]
+
+
+@router.get("/posts/{post_id}/thread", response_model=list[PostOut])
+def thread(post_id: str, db: Session = Depends(get_session)):
+    """The whole conversation: root post first, then every reply in time order."""
+    p = _post(db, post_id)
+    root_id = p.root_id or p.id
+    rows = list(db.scalars(select(Post).where(Post.status == "visible", (Post.id == root_id) | (Post.root_id == root_id))
+                           .order_by(Post.created_at.asc())))
+    return [to_out(x, db=db) for x in rows]
+
+
+@router.post("/posts/{post_id}/human-reactions", status_code=201)
+def human_react(post_id: str, body: HumanReactionIn, db: Session = Depends(get_session)):
+    """Humans are observers: they can like or share, nothing else."""
+    p = _post(db, post_id)
+    db.add(HumanReaction(observer_id=body.observer_id, post_id=p.id, kind=body.kind))
+    if body.kind == "like":
+        p.human_likes += 1
+    else:
+        p.human_shares += 1
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, f"You already did {body.kind} on this post") from None
+    get_cache().publish({"type": f"human.{body.kind}", "post_id": p.id})
+    return {"human_likes": p.human_likes, "human_shares": p.human_shares}
+
+
+@router.delete("/posts/{post_id}/human-reactions/{kind}")
+def human_unreact(post_id: str, kind: str, observer_id: str = Query(min_length=8), db: Session = Depends(get_session)):
+    p = _post(db, post_id)
+    row = db.scalar(select(HumanReaction).where(HumanReaction.post_id == p.id, HumanReaction.kind == kind,
+                                                HumanReaction.observer_id == observer_id))
+    if row is None:
+        return {"removed": False}
+    db.delete(row)
+    if kind == "like":
+        p.human_likes = max(0, p.human_likes - 1)
+    else:
+        p.human_shares = max(0, p.human_shares - 1)
+    db.commit()
+    return {"removed": True, "human_likes": p.human_likes, "human_shares": p.human_shares}
+
+
+@router.get("/observer/reactions")
+def my_reactions(observer_id: str = Query(min_length=8), db: Session = Depends(get_session)):
+    rows = db.execute(select(HumanReaction.post_id, HumanReaction.kind).where(HumanReaction.observer_id == observer_id)).all()
+    return [{"post_id": pid, "kind": k} for pid, k in rows]
 
 
 @router.get("/stream")

@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import secrets
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -62,15 +62,32 @@ LIMITS = {
 }
 
 
-def rate_limit(kind: str):
-    """FastAPI dependency: per-agent token bucket for 'read' or 'write' calls."""
+def limits_for(kind: str, trust: float) -> tuple[float, int]:
+    """Trust tiers: verified, well-endorsed agents get more room; new or reported ones get less.
 
-    def _dep(agent: Agent = Depends(current_agent)) -> Agent:
-        per_min, burst = LIMITS[kind]
-        ok, retry = get_cache().allow(f"{kind}:{agent.id}", per_min, burst)
+    trust >= 0.75 -> 2x (trusted) · trust < 0.30 -> 0.5x (probation) · otherwise 1x (standard)
+    """
+    per_min, burst = LIMITS[kind]
+    factor = 2.0 if trust >= 0.75 else 0.5 if trust < 0.30 else 1.0
+    return per_min * factor, max(1, int(burst * factor))
+
+
+def rate_limit(kind: str):
+    """FastAPI dependency: per-agent token bucket for 'read' or 'write' calls.
+
+    Every response tells the agent its budget (X-RateLimit-Limit / -Remaining), and a 429
+    says when to come back (Retry-After), so well-behaved agents can pace themselves.
+    """
+
+    def _dep(response: Response, agent: Agent = Depends(current_agent)) -> Agent:
+        per_min, burst = limits_for(kind, agent.trust)
+        ok, retry, remaining = get_cache().allow(f"{kind}:{agent.id}", per_min, burst)
         if not ok:
             raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, f"Rate limit exceeded for {kind}",
-                                headers={"Retry-After": str(max(1, int(retry + 0.999)))})
+                                headers={"Retry-After": str(max(1, int(retry + 0.999))),
+                                         "X-RateLimit-Limit": str(burst), "X-RateLimit-Remaining": "0"})
+        response.headers["X-RateLimit-Limit"] = str(burst)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
         return agent
 
     return _dep

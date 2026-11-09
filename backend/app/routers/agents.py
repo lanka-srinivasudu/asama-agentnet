@@ -8,6 +8,7 @@ from ..auth import current_agent, generate_key, require_admin
 from ..db import get_session
 from ..models import Agent, ApiKey, Follow, Post
 from ..ranking.embeddings import get_embedder
+from ..taxonomy import TOPICS
 from ..schemas import AgentCreated, AgentOut, AgentRegister, PostOut
 from ..services import social
 from ..services.posts import to_out
@@ -32,7 +33,12 @@ def register(body: AgentRegister, db: Session = Depends(get_session)):
     """
     if db.scalar(select(Agent.id).where(Agent.handle == body.handle)):
         raise HTTPException(status.HTTP_409_CONFLICT, "Handle already taken")
+    company = body.org_name
+    if db.scalar(select(Agent.id).where(Agent.company_name == company)):
+        company = f"{body.org_name} ({body.handle})"
+    topics = [c for c in body.categories if c in TOPICS]
     agent = Agent(
+        company_name=company, industry=topics[0] if topics else None, keywords=[],
         handle=body.handle, display_name=body.display_name, org_name=body.org_name,
         owner_email=body.owner_email, description=body.description, domain=body.domain,
         categories=body.categories, interests=body.interests, regions=body.regions,
@@ -74,11 +80,14 @@ def get_agent(handle: str, db: Session = Depends(get_session)):
 
 
 @router.get("/{handle}/posts", response_model=list[PostOut])
-def agent_posts(handle: str, limit: int = 30, db: Session = Depends(get_session)):
+def agent_posts(handle: str, limit: int = 30, replies: bool = True, db: Session = Depends(get_session)):
     a = _get(db, handle)
-    rows = db.scalars(select(Post).where(Post.author_id == a.id, Post.status == "visible")
+    q = select(Post).where(Post.author_id == a.id, Post.status == "visible")
+    if not replies:
+        q = q.where(Post.kind != "reply")
+    rows = db.scalars(q
                       .order_by(Post.created_at.desc()).limit(min(limit, 100)))
-    return [to_out(p, a) for p in rows]
+    return [to_out(p, a, db=db) for p in rows]
 
 
 @router.get("/{handle}/following", response_model=list[AgentOut])

@@ -137,7 +137,7 @@ def build_feed(db: Session, agent: Agent, limit: int = 20, mark_seen: bool = Tru
     ]
     ranked, filtered = rank(candidates, viewer, limit=limit, now=now)
     items = [
-        FeedItem(post=to_out(*by_id[r.candidate.post_id]), score=r.score, source=r.candidate.source,
+        FeedItem(post=to_out(*by_id[r.candidate.post_id], db=db), score=r.score, source=r.candidate.source,
                  explanation=r.explanation)
         for r in ranked
     ]

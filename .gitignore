@@ -10,3 +10,5 @@ node_modules/
 dump.rdb
 .pytest_cache/
 .DS_Store
+seed_db_keys.json
+dev.db

@@ -36,7 +36,7 @@ else
 end
 redis.call('HSET', key, 'tokens', tokens, 'ts', now)
 redis.call('EXPIRE', key, math.ceil(burst / rate) + 60)
-return {allowed, tostring(retry)}
+return {allowed, tostring(retry), math.floor(tokens)}
 """
 
 
@@ -45,7 +45,9 @@ class Cache(Protocol):
     def inbox_get(self, agent_id: str, n: int) -> list[str]: ...
     def mark_seen(self, agent_id: str, post_ids: list[str]) -> None: ...
     def seen(self, agent_id: str) -> set[str]: ...
-    def allow(self, key: str, per_minute: float, burst: int) -> tuple[bool, float]: ...
+    def allow(self, key: str, per_minute: float, burst: int) -> tuple[bool, float, int]: ...
+    def get_json(self, key: str) -> Any | None: ...
+    def set_json(self, key: str, value: Any, ttl_seconds: int) -> None: ...
     def publish(self, event: dict[str, Any]) -> None: ...
     def subscribe(self) -> "asyncio.Queue[dict[str, Any]]": ...
     def unsubscribe(self, q: "asyncio.Queue[dict[str, Any]]") -> None: ...
@@ -59,6 +61,7 @@ class MemoryCache:
         self._inbox: dict[str, deque[str]] = defaultdict(lambda: deque(maxlen=self._max))
         self._seen: dict[str, dict[str, float]] = defaultdict(dict)
         self._buckets: dict[str, tuple[float, float]] = {}
+        self._kv: dict[str, tuple[str, float]] = {}
         self._subs: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
 
     def inbox_push(self, agent_ids, post_id):
@@ -89,9 +92,21 @@ class MemoryCache:
             tokens = min(burst, tokens + (now - ts) * rate)
             if tokens >= 1:
                 self._buckets[key] = (tokens - 1, now)
-                return True, 0.0
+                return True, 0.0, int(tokens - 1)
             self._buckets[key] = (tokens, now)
-            return False, (1 - tokens) / rate
+            return False, (1 - tokens) / rate, 0
+
+    def get_json(self, key):
+        with self._lock:
+            item = self._kv.get(key)
+            if item is None or item[1] <= time.time():
+                self._kv.pop(key, None)
+                return None
+            return json.loads(item[0])
+
+    def set_json(self, key, value, ttl_seconds):
+        with self._lock:
+            self._kv[key] = (json.dumps(value, default=str), time.time() + ttl_seconds)
 
     def publish(self, event):
         for loop, q in list(self._subs):
@@ -113,6 +128,7 @@ class MemoryCache:
             self._inbox.clear()
             self._seen.clear()
             self._buckets.clear()
+            self._kv.clear()
 
 
 class RedisCache:  # pragma: no cover - exercised in docker-compose / integration
@@ -151,8 +167,15 @@ class RedisCache:  # pragma: no cover - exercised in docker-compose / integratio
         return set(self._r.smembers(f"seen:{agent_id}"))
 
     def allow(self, key, per_minute, burst):
-        allowed, retry = self._bucket(keys=[f"rl:{key}"], args=[per_minute / 60.0, burst, time.time()])
-        return bool(int(allowed)), float(retry)
+        allowed, retry, remaining = self._bucket(keys=[f"rl:{key}"], args=[per_minute / 60.0, burst, time.time()])
+        return bool(int(allowed)), float(retry), int(remaining)
+
+    def get_json(self, key):
+        raw = self._r.get(f"kv:{key}")
+        return None if raw is None else json.loads(raw)
+
+    def set_json(self, key, value, ttl_seconds):
+        self._r.set(f"kv:{key}", json.dumps(value, default=str), ex=ttl_seconds)
 
     def publish(self, event):
         self._r.publish(self.CHANNEL, json.dumps(event, default=str))
@@ -174,7 +197,7 @@ class RedisCache:  # pragma: no cover - exercised in docker-compose / integratio
         self._local.unsubscribe(q)
 
     def flush(self):
-        for pattern in ("inbox:*", "seen:*", "rl:*"):
+        for pattern in ("inbox:*", "seen:*", "rl:*", "kv:*"):
             for k in self._r.scan_iter(pattern):
                 self._r.delete(k)
 
