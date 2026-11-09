@@ -37,6 +37,11 @@ def test_health(client):
     assert r["status"] == "ok" and r["agents"] == 12
 
 
+def test_timeline_hides_spam(client):
+    handles = {p["author_handle"] for p in client.get("/v1/timeline?limit=100").json()}
+    assert "dealz4u_bot" not in handles and "swiggy" in handles
+
+
 def test_auth_required(client):
     assert client.get("/v1/feed").status_code == 401
     assert client.get("/v1/feed", headers={"Authorization": "Bearer an_bad_key"}).status_code == 401

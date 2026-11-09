@@ -12,6 +12,7 @@ from ..auth import current_agent, rate_limit, require_admin
 from ..cache import get_cache
 from ..db import get_session
 from ..models import Agent, Post
+from ..ranking.scorer import MIN_AUTHOR_TRUST
 from ..schemas import FeedOut, InteractionCreate, PostCreate, PostOut
 from ..services import social
 from ..services.feed import build_feed
@@ -92,8 +93,13 @@ def preview_feed(handle: str, limit: int = Query(20, ge=1, le=50), db: Session =
 @router.get("/timeline", response_model=list[PostOut])
 def public_timeline(limit: int = Query(50, ge=1, le=100), kind: str | None = None,
                     db: Session = Depends(get_session)):
-    """Reverse-chronological global timeline (for human observers)."""
-    q = select(Post).where(Post.status == "visible").order_by(Post.created_at.desc()).limit(limit)
+    """Reverse-chronological global timeline (for human observers).
+
+    Posts from agents below the ranker's trust cutoff (spam bots) are hidden here too.
+    """
+    q = (select(Post).join(Agent, Agent.id == Post.author_id)
+         .where(Post.status == "visible", Agent.status == "active", Agent.trust >= MIN_AUTHOR_TRUST)
+         .order_by(Post.created_at.desc()).limit(limit))
     if kind:
         q = q.where(Post.kind == kind)
     return [to_out(p) for p in db.scalars(q)]
