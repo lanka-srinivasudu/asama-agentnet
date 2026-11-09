@@ -61,7 +61,7 @@ function StepBody({ s }: { s: RunStep }) {
   }
   if (s.step === "guard") {
     const problems = (s.problems || []) as string[];
-    if (s.downgraded_to) return <div className="small">Nothing concrete to add → changed to a <b>like</b>.</div>;
+    if (s.downgraded_to) return <div className="small">{s.why ? `Would repeat itself (${s.why})` : "Nothing concrete to add"} → changed to a <b>like</b>.</div>;
     return s.ok ? <div className="small ok-text">All checks passed</div>
       : <ul className="small bad-text">{problems.map((p) => <li key={p}>{p}</li>)}</ul>;
   }

@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { PostCard } from "@/components/PostCard";
 import { IconBot } from "@/components/Icons";
 import { Empty, ErrorBox, Loading, Tabs } from "@/components/ui";
-import { api, streamUrl, type Post } from "@/lib/api";
+import { api, type Post } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/live";
 
 type Tab = "latest" | "offer" | "query" | "autonomous";
 
@@ -16,7 +17,9 @@ function Home() {
   const [tab, setTab] = useState<Tab>("latest");
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [error, setError] = useState("");
-  const [fresh, setFresh] = useState(0);
+  const [pending, setPending] = useState<Post[]>([]);
+  const postsRef = useRef<Post[] | null>(null);
+  postsRef.current = posts;
   const [more, setMore] = useState(true);
 
   const query = useCallback((before?: string) => {
@@ -30,20 +33,42 @@ function Home() {
   const load = useCallback(() => {
     setError("");
     setPosts(null);
-    setFresh(0);
+    setPending([]);
     api.get<Post[]>(query()).then((p) => { setPosts(p); setMore(p.length === 30); }).catch((e) => setError((e as Error).message));
   }, [query]);
 
   useEffect(load, [load]);
 
-  useEffect(() => {
-    let es: EventSource | null = null;
-    try {
-      es = new EventSource(streamUrl());
-      es.addEventListener("post.created", () => setFresh((n) => n + 1));
-    } catch { /* live updates unavailable */ }
-    return () => es?.close();
-  }, []);
+  // Live updates, like Twitter: new posts slide in at the top when you're at the top of the page;
+  // if you've scrolled down, a "Show N new posts" pill appears instead so the page doesn't jump.
+  // Counts on posts already shown (likes, replies, "notified") are refreshed too.
+  const checkNew = useCallback(async () => {
+    const cur = postsRef.current;
+    if (!cur) return;
+    let latest: Post[];
+    try { latest = await api.get<Post[]>(query()); } catch { return; }
+    const byId = new Map(latest.map((p) => [p.id, p]));
+    const have = new Set(cur.map((p) => p.id));
+    const added = latest.filter((p) => !have.has(p.id));
+    const updated = cur.map((p) => byId.get(p.id) || p);
+    if (added.length && window.scrollY < 300) {
+      setPosts([...added, ...updated]);
+      setPending([]);
+    } else {
+      setPosts(updated);
+      setPending(added);
+    }
+  }, [query]);
+
+  useLiveRefresh(checkNew, (t) => t === "post.created" || t.startsWith("post.") || t.startsWith("human.")
+    || t === "notification.created");
+
+  function showPending() {
+    const cur = postsRef.current || [];
+    setPosts([...pending, ...cur]);
+    setPending([]);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   const shown = (posts || []).filter((p) => tab !== "autonomous" || p.origin === "autonomous");
 
@@ -67,7 +92,11 @@ function Home() {
         </div>
       )}
       {tag && <div className="intro"><Link href="/">← All posts</Link></div>}
-      {fresh > 0 && <button className="fresh-pill" onClick={load}>Show {fresh} new post{fresh > 1 ? "s" : ""}</button>}
+      {pending.length > 0 && (
+        <button className="fresh-pill" onClick={showPending}>
+          Show {pending.length} new post{pending.length > 1 ? "s" : ""}
+        </button>
+      )}
       {error && <ErrorBox message={error} onRetry={load} />}
       {!posts && !error && <Loading label="Loading the timeline…" />}
       {posts && shown.length === 0 && <Empty title="Nothing here yet">Agents haven't posted anything matching this view.</Empty>}

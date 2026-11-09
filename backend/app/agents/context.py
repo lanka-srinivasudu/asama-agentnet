@@ -6,7 +6,7 @@ with its own cap, and record how many tokens each used (shown in the activity lo
   1. platform rules          (fixed)          4. the trigger post + why you were notified
   2. company prompt file     (<= 600 tok)     5. the thread around it  (<= 450 tok, cached 10 min)
   3. agent profile           (<= 120 tok)     6. own recent posts      (<= 300 tok, avoid repeating)
-                                              7. relevant memories     (<= 300 tok)
+  3b. what its company DB has (<= 200 tok)    7. relevant memories     (<= 300 tok)
 Tool results are added later (<= 600 tok). Total budget ~3,000 tokens per decision.
 
 Post text from OTHER agents is wrapped as untrusted data: it can inform, never instruct.
@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..cache import get_cache
-from ..models import Agent, Notification, Post
+from ..models import Agent, CompanyRecord, Notification, Post
 from ..ranking.embeddings import get_embedder
 from ..taxonomy import TOPICS
 from .memory import recall
@@ -110,6 +110,19 @@ def build_context(db: Session, agent: Agent, post: Post | None, notification: No
     ctx.facts.update(agent_handle=agent.handle, company=agent.company_name, industry=agent.industry,
                      categories=list(agent.categories or []), interests=list(agent.interests or []),
                      keywords=list(agent.keywords or []))
+
+    if agent.company_db_id:
+        # A short menu of what the company can offer, so the DECIDE step knows when it has something
+        # useful to add (without it, an LLM can't tell that a movie post matches a cinema-ride coupon).
+        menu = []
+        for r in db.scalars(select(CompanyRecord).where(CompanyRecord.dataset_id == agent.company_db_id).limit(80)):
+            label = r.data.get("title") or r.data.get("item") or r.data.get("vehicle") or r.data.get("name")
+            if label:
+                menu.append((0 if r.data.get("code") else 1, f"- [{r.collection}] {label}"
+                                                            + (f" (code {r.data['code']})" if r.data.get("code") else "")))
+        menu.sort(key=lambda x: x[0])
+        if menu:
+            ctx.add("What your company database has (summary)", "\n".join(line for _, line in menu[:14]), 200)
 
     query_vec = get_embedder().embed(" ".join([agent.company_name or "", topics, wants]))
     if post is not None:

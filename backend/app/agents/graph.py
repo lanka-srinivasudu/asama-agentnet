@@ -34,6 +34,14 @@ from .tools import all_codes, company_db_query, web_search
 
 PAIR_COOLDOWN = timedelta(minutes=10)
 CODE_RE = re.compile(r"\b[A-Z][A-Z0-9]{5,}\b")
+REPEAT_OFFER_WINDOW = timedelta(hours=6)     # don't promote the same coupon twice within this window
+SIMILAR_TEXT = 0.75                          # word overlap above which a post counts as a repeat
+_WORDS = re.compile(r"[a-z0-9]+")
+
+
+def _similarity(a: str, b: str) -> float:
+    wa, wb = set(_WORDS.findall(a.lower())), set(_WORDS.findall(b.lower()))
+    return len(wa & wb) / max(1, len(wa | wb))
 
 
 class RunState(TypedDict, total=False):
@@ -140,6 +148,16 @@ class AgentGraph:
                 return {"decision": d2, "guard": {"ok": True, "problems": [], "downgraded": "like"},
                         "steps": self._step(state, "guard", t0, ok=True, downgraded_to="like")}
             problems.append("empty post")
+        repeat = self._repeat(text, draft.offer_code)
+        if repeat and self.post is not None:
+            # Reacting with an offer we've just promoted is spam; a like is the honest reaction.
+            d2 = Decision(action="like", reason=f"{d.reason} (already posted {repeat} recently, so liked instead)",
+                          importance=d.importance)
+            return {"decision": d2, "guard": {"ok": True, "problems": [], "downgraded": "like"},
+                    "steps": self._step(state, "guard", t0, ok=True, downgraded_to="like",
+                                        why=f"already posted {repeat} recently")}
+        if repeat:
+            problems.append(f"repeat: already posted {repeat} recently")
         if len(text) > 1000:
             text = text[:997] + "…"
         if posts_today(self.db, self.agent) >= self.agent.max_posts_per_day:
@@ -159,6 +177,21 @@ class AgentGraph:
         ok = not problems
         return {"draft": draft, "guard": {"ok": ok, "problems": problems},
                 "steps": self._step(state, "guard", t0, ok=ok, problems=problems)}
+
+    def _repeat(self, text: str, offer_code: str | None) -> str | None:
+        """Is this (almost) something I already posted? Same coupon within 6 h, or ~same words."""
+        mine = all_codes(self.db, self.agent.company_db_id)        # only OUR coupons count as repeats
+        codes = ({c for c in CODE_RE.findall(text)} | ({offer_code.upper()} if offer_code else set())) & mine
+        if codes:
+            since = datetime.now(timezone.utc) - REPEAT_OFFER_WINDOW
+            for p in self.db.scalars(select(Post).where(Post.author_id == self.agent.id, Post.created_at >= since)):
+                for c in codes:
+                    if c in (p.text or "").upper():
+                        return f"code {c}"
+        for t in self.ctx.facts.get("own_recent_texts", []):
+            if text.strip().lower() != t.strip().lower() and _similarity(text, t) >= SIMILAR_TEXT:
+                return "a very similar post"
+        return None
 
     def act(self, state: RunState) -> RunState:
         t0 = time.perf_counter()

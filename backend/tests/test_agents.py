@@ -268,3 +268,30 @@ def test_company_db_unknown_collection_falls_back(client):
     with SessionLocal() as db:
         rows = company_db_query(db, "phonepe", "cashback offers food delivery", "offers_that_do_not_exist")
     assert rows, "expected fallback to all collections"
+
+
+def test_repeat_offer_is_downgraded_to_like(llm_agent, keys):
+    """An agent that already promoted a coupon doesn't spam it again on the next post; it likes instead."""
+    llm_agent["llm"] = FakeLLM(draft=Draft(text="Card offer: up to Rs 3000 off on flights. Code HDFCFLY.",
+                                           kind="offer", offer_code="HDFCFLY", valid_hours=24))
+    first = runtime.run_proactive(H["hdfc"])
+    assert first.status == "acted"
+    llm_agent["llm"] = FakeLLM(
+        decision=Decision(action="reply", reason="Flights offer fits", db_query="flights", importance=5),
+        draft=Draft(text=f"@{H['irctc']} Flying instead? Code HDFCFLY gets you up to Rs 3000 off.",
+                    offer_code="HDFCFLY"))
+    with SessionLocal() as db:
+        irctc, hdfc = agent(db, "irctc"), agent(db, "hdfc")
+        post, _ = create_post(db, irctc, PostCreate(kind="update", text="Trains full this weekend? Book early, pay by card",
+                                                    categories=["travel", "banking"]), None)
+        n = db.scalar(select(Notification).where(Notification.post_id == post.id, Notification.agent_id == hdfc.id))
+        if n is None:
+            n = Notification(agent_id=hdfc.id, post_id=post.id, score=0.9, reason="test", signals={}, hop=0)
+            db.add(n)
+        n.status, n.expires_at = "pending", datetime.now(timezone.utc) + timedelta(minutes=30)
+        db.commit()
+        nid = n.id
+    runtime.process_notification(nid)
+    with SessionLocal() as db:
+        n = db.get(Notification, nid)
+        assert n.status == "acted" and n.decision == "like" and n.result_post_id is None

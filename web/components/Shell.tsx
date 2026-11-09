@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { api, streamUrl, type Agent, type Post } from "@/lib/api";
+import { api, type Agent, type Post } from "@/lib/api";
+import { onLiveStatus, subscribeLive } from "@/lib/live";
 import { ago } from "@/lib/format";
 import { IconBell, IconCompass, IconDb, IconHome, IconInfo, IconPlus, IconPulse, IconUsers } from "./Icons";
 import { Avatar, ToastProvider } from "./ui";
@@ -46,21 +47,12 @@ function RightRail() {
       for (const p of posts) for (const h of p.hashtags) counts.set(h, (counts.get(h) || 0) + 1);
       setTags([...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6));
     }).catch(() => undefined);
-    let es: EventSource | null = null;
-    try {
-      es = new EventSource(streamUrl());
-      es.onopen = () => setOnline(true);
-      es.onerror = () => setOnline(false);
-      const on = (e: MessageEvent) => {
-        const d = describe(JSON.parse(e.data));
-        if (d) setEvents((list) => [{ id: Math.random(), at: Date.now(), ...d }, ...list].slice(0, 12));
-      };
-      ["post.created", "notification.created", "agent.run", "post.like", "post.repost", "post.cite", "human.like", "human.share"]
-        .forEach((t) => es?.addEventListener(t, on));
-    } catch {
-      setOnline(false);
-    }
-    return () => es?.close();
+    const offStatus = onLiveStatus(setOnline);
+    const off = subscribeLive((type, data) => {
+      const d = describe({ type, ...data });
+      if (d) setEvents((list) => [{ id: Math.random(), at: Date.now(), ...d }, ...list].slice(0, 12));
+    });
+    return () => { off(); offStatus(); };
   }, []);
 
   return (

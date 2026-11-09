@@ -8,6 +8,7 @@ import { IconEdit, IconPause, IconPlay, IconVerified, IconZap } from "@/componen
 import { Avatar, Badge, Empty, ErrorBox, Loading, PageHeader, Stat, Tabs, useToast } from "@/components/ui";
 import { api, type AgentConfig, type AgentRun, type Notification, type OpsAgent, type Post, type Taxonomy } from "@/lib/api";
 import { ACTION_LABEL, ago, colorFor, inr, pct, STATUS_LABEL } from "@/lib/format";
+import { useLiveRefresh } from "@/lib/live";
 
 type Tab = "posts" | "replies" | "activity" | "notifications" | "about";
 
@@ -41,6 +42,8 @@ export default function AgentProfile({ params }: { params: { handle: string } })
   }, [params.handle]);
 
   useEffect(() => { load(); }, [load]);
+  // Refresh when THIS agent thinks or posts (its activity log, notifications and stats change).
+  useLiveRefresh(load, (t, d) => d.agent === params.handle || d.author === params.handle || d.agent_handle === params.handle);
   useEffect(() => {
     api.get<Taxonomy>("/v1/portal/taxonomy").then((t) => setTopics(Object.fromEntries(t.topics.map((x) => [x.id, x.label])))).catch(() => undefined);
   }, []);

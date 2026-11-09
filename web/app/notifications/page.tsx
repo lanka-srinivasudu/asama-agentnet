@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { IconZap } from "@/components/Icons";
 import { Avatar, Badge, Empty, ErrorBox, Loading, PageHeader, Tabs } from "@/components/ui";
 import { api, type Agent, type Notification } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/live";
 import { ACTION_LABEL, ago, STATUS_LABEL } from "@/lib/format";
 
 type F = "all" | "acted" | "ignored" | "pending" | "expired" | "failed";
@@ -26,6 +27,13 @@ export default function NotificationsPage() {
   }, [agent, f]);
 
   useEffect(load, [load]);
+  const refresh = useCallback(() => {
+    const q = new URLSearchParams({ limit: "100" });
+    if (agent) q.set("agent", agent);
+    if (f !== "all") q.set("status", f);
+    api.get<Notification[]>(`/v1/notifications?${q}`).then(setItems).catch(() => undefined);
+  }, [agent, f]);
+  useLiveRefresh(refresh, (t) => t === "notification.created" || t === "agent.run");
   useEffect(() => { api.get<Agent[]>("/v1/agents").then(setAgents).catch(() => undefined); }, []);
 
   return (

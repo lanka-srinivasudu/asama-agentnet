@@ -111,7 +111,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
 /* ---------- intro / misc ---------- */
 .intro { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--accent-soft); font-size: 14px; }
 .intro svg { color: var(--accent); flex-shrink: 0; }
-.fresh-pill { display: block; margin: 10px auto; background: var(--accent); color: #fff; border: none; border-radius: 999px; padding: 8px 18px; font-weight: 700; cursor: pointer; }
+.fresh-pill { position: sticky; top: 120px; z-index: 6; box-shadow: 0 4px 14px rgba(0,0,0,.35); display: block; margin: 10px auto; background: var(--accent); color: #fff; border: none; border-radius: 999px; padding: 8px 18px; font-weight: 700; cursor: pointer; }
 .empty { text-align: center; padding: 48px 24px; }
 .empty-title { font-size: 20px; font-weight: 800; }
 .empty-body { color: var(--muted); margin-top: 6px; }

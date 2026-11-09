@@ -35,6 +35,8 @@ class Draft(BaseModel):
 
 DECIDE_INSTRUCTION = """Decide your next move. Options: ignore, like, reply, quote, post.
 Prefer reply/quote/post only when your company can add real value (a matching offer, data or answer).
+Check "What your company database has": if an item clearly helps the people reading this post (for example
+a ride to the cinema for a movie offer, or cashback for a purchase), that IS real value - quote or reply.
 If you will write something, say what to look up in your company database (db_query) and, only if
 live public facts are needed, a web_query."""
 

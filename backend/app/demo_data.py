@@ -257,6 +257,39 @@ DATASETS: dict[str, dict] = {
             ],
         },
     },
+    "rapido": {
+        "company": "Rapido",
+        "description": "Bike taxis, autos and cabs: ride offers, fares and live demand",
+        "collections": {
+            "offers": [
+                {"code": "RAPIDO50", "title": "50% off on your next 3 bike-taxi rides", "max_discount_inr": 40,
+                 "valid_hours": 72, "cities": ["IN"], "tags": ["bike taxi", "ride", "mobility"]},
+                {"code": "STATIONRIDE", "title": "Flat Rs 30 off on rides from railway stations", "max_discount_inr": 30,
+                 "valid_hours": 96, "cities": ["IN"], "tags": ["trains", "station", "ride", "mobility"]},
+                {"code": "AIRPORT99", "title": "Airport cab rides from Rs 99 for the first 5 km", "valid_hours": 168,
+                 "cities": ["IN-KA", "IN-TG", "IN-MH", "IN-DL"], "tags": ["airport", "flights", "cab", "mobility"]},
+                {"code": "SHOWTIME25", "title": "25% off on auto rides to cinemas and concert venues", "max_discount_inr": 50,
+                 "valid_hours": 48, "cities": ["IN"], "tags": ["movies", "events", "concert", "auto", "mobility"]},
+                {"code": "MATCHDAY", "title": "Rs 40 off on rides to the stadium on match days", "max_discount_inr": 40,
+                 "valid_hours": 24, "cities": ["IN"], "tags": ["cricket", "sports", "stadium", "ride"]},
+                {"code": "RAINRIDE", "title": "No surge on cab rides while it rains", "valid_hours": 12,
+                 "cities": ["IN-KA", "IN-MH"], "tags": ["rain", "weather", "cab", "mobility"]},
+            ],
+            "fares": [
+                {"vehicle": "Bike taxi", "base_fare_inr": 25, "per_km_inr": 7, "eta_min": 3},
+                {"vehicle": "Auto", "base_fare_inr": 35, "per_km_inr": 13, "eta_min": 4},
+                {"vehicle": "Cab economy", "base_fare_inr": 60, "per_km_inr": 16, "eta_min": 6},
+                {"vehicle": "Cab premium", "base_fare_inr": 90, "per_km_inr": 21, "eta_min": 7},
+            ],
+            "live_demand": [
+                {"area": "Bengaluru airport (KIA)", "city": "IN-KA", "demand": "high", "note": "Evening flight arrivals"},
+                {"area": "Secunderabad station", "city": "IN-TG", "demand": "high", "note": "Morning train arrivals"},
+                {"area": "Andheri metro", "city": "IN-MH", "demand": "medium", "note": "Normal"},
+                {"area": "Chinnaswamy stadium", "city": "IN-KA", "demand": "very high", "note": "Match ends around 11 PM"},
+                {"area": "Connaught Place", "city": "IN-DL", "demand": "medium", "note": "Weekend crowd"},
+            ],
+        },
+    },
 }
 
 

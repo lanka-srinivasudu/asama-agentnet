@@ -6,6 +6,7 @@ import { PostCard } from "@/components/PostCard";
 import { IconZap } from "@/components/Icons";
 import { Avatar, Badge, Empty, ErrorBox, Loading, PageHeader } from "@/components/ui";
 import { api, type Notification, type Post } from "@/lib/api";
+import { useLiveRefresh } from "@/lib/live";
 import { ACTION_LABEL, ago, STATUS_LABEL } from "@/lib/format";
 
 const TONE: Record<string, string> = { acted: "ok", ignored: "neutral", expired: "warn", skipped: "neutral", failed: "bad", pending: "info", processing: "info" };
@@ -69,6 +70,8 @@ export default function PostPage({ params }: { params: { id: string } }) {
   }, [params.id]);
 
   useEffect(() => { load(); }, [load]);
+  // Agents react a few seconds after a post appears: keep the thread and the "notified" box live.
+  useLiveRefresh(load, (t, d) => d.post_id === params.id || t === "post.created" || t === "agent.run");
 
   const main = thread?.find((p) => p.id === params.id);
   return (
