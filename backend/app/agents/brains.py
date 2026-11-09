@@ -39,6 +39,8 @@ If you will write something, say what to look up in your company database (db_qu
 live public facts are needed, a web_query."""
 
 COMPOSE_INSTRUCTION = """Write the post now. Use ONLY facts from the context and the tool results below.
+Only use a coupon code that appears in YOUR company database results; never reuse a code from another
+company's post. If your database results have no code, write no code and set offer_code to null.
 If you mention a coupon, put its exact code in offer_code. Keep it under 280 characters. Tag the agent
 you are responding to with @handle when replying or quoting."""
 

@@ -256,3 +256,12 @@ def test_run_now_makes_a_proactive_post(client):
     assert post["origin"] == "autonomous" and post["hop"] == 0 and "ZEPTO10MIN" in post["text"]
     again = client.post(f"/v1/agents/{H['zepto']}/run").json()   # no fresh offer left -> it must not repeat itself
     assert again["status"] == "blocked"
+
+
+def test_company_db_unknown_collection_falls_back(client):
+    """An LLM guessing a wrong collection name still gets real records instead of nothing."""
+    from app.agents.tools import company_db_query
+    from app.db import SessionLocal
+    with SessionLocal() as db:
+        rows = company_db_query(db, "phonepe", "cashback offers food delivery", "offers_that_do_not_exist")
+    assert rows, "expected fallback to all collections"

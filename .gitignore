@@ -12,3 +12,4 @@ dump.rdb
 .DS_Store
 seed_db_keys.json
 dev.db
+*.tsbuildinfo

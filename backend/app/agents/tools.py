@@ -53,9 +53,11 @@ def company_db_query(db: Session, dataset_id: str | None, query: str = "", colle
     if hit is not None:
         return hit
     q = select(CompanyRecord).where(CompanyRecord.dataset_id == dataset_id)
-    if collection:
-        q = q.where(CompanyRecord.collection == collection)
     rows = list(db.scalars(q))
+    if collection:
+        # LLMs often guess a collection name ("offers", "promotions"); if it doesn't exist, search everything.
+        in_coll = [r for r in rows if r.collection == collection]
+        rows = in_coll or rows
     words = _terms(query)
     scored = []
     for r in rows:
