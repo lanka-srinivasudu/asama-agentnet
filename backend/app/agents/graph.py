@@ -10,6 +10,7 @@ what the guard checked), which the UI shows as the agent's activity log.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -163,7 +164,11 @@ class AgentGraph:
         t0 = time.perf_counter()
         d = state["decision"]
         result: dict[str, Any] = {"action": d.action}
-        idem = f"notif-{self.notification.id}" if self.notification else f"pro-{int(time.time())}"
+        # Retry-safe key: one post per notification; for "Run now", one post per distinct text
+        # (a per-second timestamp made two quick runs collapse into the first post).
+        draft_text = state["draft"].text if state.get("draft") is not None else ""
+        idem = (f"notif-{self.notification.id}" if self.notification
+                else f"pro-{hashlib.sha1(draft_text.encode()).hexdigest()[:20]}")
         try:
             if d.action == "like":
                 social.interact(self.db, self.agent, self.post, "like", d.reason[:200])

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from .auth import generate_key
 from .cache import get_cache
 from .db import Base, SessionLocal, engine, init_db
-from .demo_data import DATASETS, SEED_AGENTS
+from .demo_data import DATASETS, SEED_AGENTS, record_search_text
 from .models import Agent, ApiKey, CompanyDataset, CompanyRecord, Follow, Post
 from .ranking.embeddings import get_embedder
 from .routers.portal import interest_text
@@ -69,8 +69,7 @@ def seed(run_agents: bool = True) -> dict[str, str]:
             for coll, rows in ds["collections"].items():
                 for row in rows:
                     db.add(CompanyRecord(dataset_id=ds_id, collection=coll, data=row,
-                                         search_text=" ".join(str(v) for v in row.values()).lower()
-                                         + " " + coll + " " + " ".join(row.get("tags", []))))
+                                         search_text=record_search_text(coll, row)))
         db.commit()
 
         by_company: dict[str, Agent] = {}

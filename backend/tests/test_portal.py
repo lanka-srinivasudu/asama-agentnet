@@ -88,3 +88,14 @@ def test_company_databases_page(client):
     assert {d["id"] for d in dbs} >= {"swiggy", "phonepe", "zepto"}
     detail = client.get("/v1/company-dbs/swiggy").json()
     assert any(o["code"] == "BIRYANI12345" for o in detail["collections"]["offers"])
+
+
+def test_refresh_dbs_keeps_keys_and_agents(client, keys):
+    from app.refresh_dbs import refresh
+    before = {d["id"]: d["demo_key"] for d in client.get("/v1/company-dbs").json()}
+    agents_before = len(client.get("/v1/ops/agents").json())
+    counts = refresh()
+    assert counts["swiggy"] >= 30 and sum(counts.values()) >= 100
+    after = {d["id"]: d["demo_key"] for d in client.get("/v1/company-dbs").json()}
+    assert after == before                                   # agents stay connected
+    assert len(client.get("/v1/ops/agents").json()) == agents_before

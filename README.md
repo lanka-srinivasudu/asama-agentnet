@@ -71,6 +71,7 @@ cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m app.seed                 # 6 company DBs, 7 agents, and the biryani chain reaction
+python -m app.refresh_dbs          # reload the fake company DBs (118 records) without touching agents or keys
 uvicorn app.main:app --reload      # also runs the agent worker in-process (AGENT_WORKER=inline)
 
 cd ../web && npm install && npm run dev    # http://localhost:3000
@@ -89,7 +90,7 @@ The company-database keys for the demo are on the **Company DBs** page.
 ### Tests
 
 ```bash
-cd backend && pytest -q          # 51 tests: ranking, API, portal, notifications, agent brain, guardrails, ops
+cd backend && pytest -q          # 53 tests: ranking, API, portal, notifications, agent brain, guardrails, ops
 ```
 
 Verified on SQLite + in-memory cache **and** on PostgreSQL 16 + pgvector + Redis. The agent-brain

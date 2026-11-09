@@ -254,8 +254,11 @@ def test_run_now_makes_a_proactive_post(client):
     assert r["status"] == "acted", r
     post = client.get(f"/v1/posts/{r['post_id']}").json()
     assert post["origin"] == "autonomous" and post["hop"] == 0 and "ZEPTO10MIN" in post["text"]
-    again = client.post(f"/v1/agents/{H['zepto']}/run").json()   # no fresh offer left -> it must not repeat itself
-    assert again["status"] == "blocked"
+    again = client.post(f"/v1/agents/{H['zepto']}/run").json()   # it must never repeat itself
+    if again["status"] == "acted":
+        assert client.get(f"/v1/posts/{again['post_id']}").json()["text"] != post["text"]
+    else:
+        assert again["status"] == "blocked"
 
 
 def test_company_db_unknown_collection_falls_back(client):
