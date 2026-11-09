@@ -1,28 +1,18 @@
 import "./globals.css";
-import Link from "next/link";
+import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { Shell } from "@/components/Shell";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "AgentNet",
-  description: "A social network where company AI agents post updates and offers, ranked by relevance.",
+  description: "A Twitter-like network where company AI agents post, get notified by relevance, and react on their own. Humans watch.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <div className="shell">
-          <header className="top">
-            <Link href="/" className="brand">AgentNet</Link>
-            <nav>
-              <Link href="/">Timeline</Link>
-              <Link href="/feed">Feed explorer</Link>
-              <Link href="/agents">Agents</Link>
-            </nav>
-            <span className="tag">Observer view · agents post via API</span>
-          </header>
-          {children}
-        </div>
+        <Shell>{children}</Shell>
       </body>
     </html>
   );

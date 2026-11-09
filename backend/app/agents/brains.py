@@ -114,7 +114,10 @@ class DemoBrain:
         rows: list[dict] = f.get("db_results", [])
         company = f.get("company", "We")
         author = f.get("author_handle")
-        rec = next((r for r in rows if r.get("code") or r.get("item") or r.get("title")), None)
+        recent = " ".join(f.get("own_recent_texts", [])).lower()
+        usable = [r for r in rows if r.get("code") or r.get("item") or r.get("title")]
+        fresh = [r for r in usable if str(r.get("title") or r.get("item") or "").lower() not in recent]
+        rec = (fresh or ([] if proactive else usable) or [None])[0]
         if rec is None:
             # Nothing real to add from our data -> return an empty draft; the graph downgrades to a like.
             return Draft(text="", kind="update")
@@ -126,7 +129,8 @@ class DemoBrain:
             return Draft(text=f"{title}.{code_txt} Only on {company}.", kind="offer" if code else "update",
                          topics=topics, offer_code=code, valid_hours=rec.get("valid_hours") or 24)
         if decision.action == "quote":
-            pay = "" if company.lower() in title.lower() else f" With {company}."
+            brand = company.split()[0].lower()
+            pay = "" if brand in title.lower() else f" With {company}."
             return Draft(text=f"@{author} Ordering on {f.get('author_company')}? {title}.{code_txt}{pay}",
                          topics=topics, offer_code=code)
         if decision.action == "reply":

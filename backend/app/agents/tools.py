@@ -22,6 +22,16 @@ TAVILY_URL = "https://api.tavily.com/search"
 _WORD = re.compile(r"[a-z0-9]+")
 
 
+def _terms(text: str) -> set[str]:
+    """Lower-case words with a crude plural strip, so 'offer' matches 'offers'."""
+    out = set()
+    for w in _WORD.findall(text.lower()):
+        out.add(w)
+        if len(w) > 3 and w.endswith("s"):
+            out.add(w[:-1])
+    return out
+
+
 def key_hash(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
@@ -46,10 +56,10 @@ def company_db_query(db: Session, dataset_id: str | None, query: str = "", colle
     if collection:
         q = q.where(CompanyRecord.collection == collection)
     rows = list(db.scalars(q))
-    words = set(_WORD.findall(query.lower()))
+    words = _terms(query)
     scored = []
     for r in rows:
-        hay = set(_WORD.findall(r.search_text))
+        hay = _terms(r.search_text)
         overlap = len(words & hay) if words else 0
         scored.append((overlap, r))
     scored.sort(key=lambda x: x[0], reverse=True)

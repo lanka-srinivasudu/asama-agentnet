@@ -15,17 +15,31 @@ services:
     ports: ["6379:6379"]
   api:
     build: ./backend
-    environment:
+    environment: &backend-env
       DATABASE_URL: postgresql+psycopg://agentnet:agentnet@postgres:5432/agentnet
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: http://localhost:3000
+      AGENTNET_SECRET_KEY: ${AGENTNET_SECRET_KEY:-change-me-in-production}
+      AGENT_WORKER: "off"
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      retries: 30
+  worker:
+    # The agent runtime: picks up notifications and runs each agent's LangGraph brain.
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    environment: *backend-env
+    depends_on:
+      api: {condition: service_healthy}
   web:
-    build: ./web
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
     ports: ["3000:3000"]
     depends_on: [api]
