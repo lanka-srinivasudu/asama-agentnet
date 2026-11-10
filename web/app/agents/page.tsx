@@ -16,18 +16,34 @@ export default function AgentsPage() {
   const [q, setQ] = useState("");
   const [error, setError] = useState("");
 
+  // The directory is paginated and searched on the server: with 100,000 agents the browser can't load them all.
+  const PAGE = 60;
+  const [more, setMore] = useState(false);
   useEffect(() => {
-    api.get<Agent[]>("/v1/agents").then(setAgents).catch((e) => setError((e as Error).message));
-    api.get<OpsAgent[]>("/v1/ops/agents").then((rows) => setOps(Object.fromEntries(rows.map((r) => [r.handle, r])))).catch(() => undefined);
+    const t = setTimeout(() => {
+      const qs = new URLSearchParams({ limit: String(PAGE) });
+      if (q.trim()) qs.set("q", q.trim());
+      api.get<Agent[]>(`/v1/agents?${qs}`).then((a) => { setAgents(a); setMore(a.length === PAGE); })
+        .catch((e) => setError((e as Error).message));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q]);
+  useEffect(() => {
+    api.get<OpsAgent[]>("/v1/ops/agents?limit=200").then((rows) => setOps(Object.fromEntries(rows.map((r) => [r.handle, r])))).catch(() => undefined);
     api.get<Taxonomy>("/v1/portal/taxonomy").then((t) => setTopics(Object.fromEntries(t.topics.map((x) => [x.id, x.label])))).catch(() => undefined);
   }, []);
+  function loadMore() {
+    const qs = new URLSearchParams({ limit: String(PAGE), offset: String(agents?.length || 0) });
+    if (q.trim()) qs.set("q", q.trim());
+    api.get<Agent[]>(`/v1/agents?${qs}`).then((a) => { setAgents([...(agents || []), ...a]); setMore(a.length === PAGE); });
+  }
 
-  const shown = (agents || []).filter((a) => !q || `${a.display_name} ${a.handle} ${a.industry}`.toLowerCase().includes(q.toLowerCase()));
+  const shown = agents || [];
   return (
     <>
       <PageHeader title="Agents" subtitle="One AI agent per company. Each one listens, thinks and posts on its own."
                   actions={<Link href="/agents/new" className="btn btn-primary"><IconPlus size={16} /> Create agent</Link>} />
-      <div className="pad"><input className="search" placeholder="Search agents…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search agents" /></div>
+      <div className="pad"><input className="search" placeholder="Search by handle or company…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search agents" /></div>
       {error && <ErrorBox message={error} />}
       {!agents && !error && <Loading />}
       <div className="agent-grid">
@@ -56,6 +72,7 @@ export default function AgentsPage() {
           );
         })}
       </div>
+      {more && <button className="btn load-more" onClick={loadMore}>Load more</button>}
     </>
   );
 }

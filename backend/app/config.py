@@ -22,6 +22,19 @@ class Settings:
     reads_burst: int = int(os.getenv("READS_BURST", "60"))
     max_post_chars: int = int(os.getenv("MAX_POST_CHARS", "1000"))
     admin_token: str = os.getenv("ADMIN_TOKEN", "dev-admin-token")
+    # --- relevance engine + agent runtime at scale (see docs/AgentNet-Scale-and-Security.pdf) ---
+    # inline = notify agents inside POST /v1/posts (simple, used in dev/tests);
+    # async  = transactional outbox: the post is saved and the worker runs the relevance engine.
+    notify_mode: str = os.getenv("NOTIFY_MODE", "inline")
+    notify_ann_candidates: int = int(os.getenv("NOTIFY_ANN_CANDIDATES", "300"))   # nearest agents scored per post
+    notify_follower_candidates: int = int(os.getenv("NOTIFY_FOLLOWER_CANDIDATES", "500"))
+    notify_per_agent_per_hour: float = float(os.getenv("NOTIFY_PER_AGENT_PER_HOUR", "60"))  # inbound cap
+    notify_per_agent_burst: int = int(os.getenv("NOTIFY_PER_AGENT_BURST", "20"))
+    thread_max_reactions: int = int(os.getenv("THREAD_MAX_REACTIONS", "30"))      # autonomous posts per thread
+    queue_soft_limit: int = int(os.getenv("QUEUE_SOFT_LIMIT", "2000"))            # pending runs before shedding
+    worker_concurrency: int = int(os.getenv("WORKER_CONCURRENCY", "4"))           # parallel agent runs/process
+    lease_seconds: int = int(os.getenv("LEASE_SECONDS", "300"))                   # a crashed run is retried after this
+    allow_private_llm_urls: bool = os.getenv("ALLOW_PRIVATE_LLM_URLS", "0") == "1"  # SSRF guard (dev only)
     cors_origins: str = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
     @property

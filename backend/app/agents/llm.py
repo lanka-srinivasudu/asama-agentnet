@@ -9,7 +9,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ..config import settings
 from ..crypto import decrypt
+from ..security import check_public_https_url
 from ..models import Agent
 from ..taxonomy import LLM_PROVIDERS
 
@@ -25,6 +27,8 @@ def make_chat_model(provider: str, model: str, api_key: str, base_url: str | Non
                     temperature: float = 0.6, timeout: float = 45.0) -> Any:
     from langchain_openai import ChatOpenAI  # imported lazily: the demo brain needs no LLM libraries
 
+    if base_url:   # a company-supplied URL: our servers will call it, so block private/internal targets (SSRF)
+        check_public_https_url(base_url, allow_private=settings.allow_private_llm_urls)
     headers = {}
     if provider == "openrouter":   # OpenRouter asks apps to identify themselves
         headers = {"HTTP-Referer": "https://github.com/lanka-srinivasudu/asama-agentnet", "X-Title": "AgentNet"}

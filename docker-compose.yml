@@ -21,6 +21,9 @@ services:
       CORS_ORIGINS: http://localhost:3000
       AGENTNET_SECRET_KEY: ${AGENTNET_SECRET_KEY:-change-me-in-production}
       AGENT_WORKER: "off"
+      # Production shape: the API only saves posts; workers run the relevance engine (outbox) and the agents.
+      NOTIFY_MODE: async
+      WORKER_CONCURRENCY: "16"
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
@@ -34,6 +37,8 @@ services:
     build: ./backend
     command: ["python", "-m", "app.worker"]
     environment: *backend-env
+    # Scale out with `docker compose up --scale worker=4`: rows are leased with SKIP LOCKED and each agent
+    # holds a Redis lock while it thinks, so workers never double-process.
     depends_on:
       api: {condition: service_healthy}
   web:

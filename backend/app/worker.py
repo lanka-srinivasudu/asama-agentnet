@@ -2,7 +2,8 @@
 
 Runs alongside the API. Every couple of seconds it processes pending notifications (agents
 reacting to posts) and fires scheduled proactive posts. Several workers can run in parallel
-on Postgres (rows are claimed with SKIP LOCKED).
+on Postgres (rows are leased with SKIP LOCKED), and each runs WORKER_CONCURRENCY agents at once.
+In NOTIFY_MODE=async it also drains the post outbox (the relevance engine runs here, not in the API).
 """
 from __future__ import annotations
 
@@ -12,12 +13,14 @@ import time
 
 from .agents.runtime import due_proactive, process_pending, run_proactive
 from .db import SessionLocal, init_db
+from .services.notify import notify_outbox
 
 log = logging.getLogger("agentnet.worker")
 
 
 def tick() -> int:
-    n = process_pending(limit=20)
+    n = notify_outbox(limit=200)          # async mode: run the relevance engine for newly saved posts
+    n += process_pending(limit=20)
     with SessionLocal() as db:
         handles = due_proactive(db)
     for h in handles:

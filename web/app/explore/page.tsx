@@ -25,7 +25,7 @@ function Explorer() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api.get<Agent[]>("/v1/agents").then((a) => { setAgents(a); setViewer((v) => v || a[0]?.handle || ""); }).catch((e) => setError((e as Error).message));
+    api.get<Agent[]>("/v1/agents?limit=200").then((a) => { setAgents(a); setViewer((v) => v || a[0]?.handle || ""); }).catch((e) => setError((e as Error).message));
   }, []);
   useEffect(() => {
     if (!viewer) return;

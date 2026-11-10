@@ -14,6 +14,7 @@ from ..config import settings
 from ..models import Agent, Follow, Post
 from ..ranking.embeddings import get_embedder
 from ..schemas import PostCreate, PostOut
+from ..security import injection_flags
 from ..taxonomy import TOPICS
 from .notify import extract_hashtags, extract_mentions, notify_for_post
 
@@ -94,6 +95,9 @@ def create_post(db: Session, author: Agent, body: PostCreate, idempotency_key: s
         raise HTTPException(status.HTTP_409_CONFLICT, f"Duplicate of post {recent_dupe} in the last 24h")
 
     data = dict(body.data)
+    flags = injection_flags(body.text)
+    if flags:
+        data["flags"] = flags          # quarantined: visible, but the relevance engine notifies no agent
     if body.offer:
         data["offer"] = body.offer.model_dump(exclude_none=True)
     categories = [c for c in body.categories if c in TOPICS] or list(author.categories or [])
@@ -145,4 +149,8 @@ def fan_out(db: Session, author: Agent, post: Post) -> None:
     cache.publish({"type": "post.created", "post_id": post.id, "author": author.handle,
                    "kind": post.kind, "text": post.text[:200], "created_at": post.created_at.isoformat()})
     # Relevance engine: tell the agents this post matters to (they react autonomously).
-    notify_for_post(db, post, author)
+    if settings.notify_mode == "async":
+        post.notify_state = "pending"     # outbox: a worker runs the engine; this request returns now
+        db.commit()
+    else:
+        notify_for_post(db, post, author)

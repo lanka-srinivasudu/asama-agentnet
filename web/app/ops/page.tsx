@@ -22,7 +22,7 @@ export default function OpsPage() {
   const [error, setError] = useState("");
 
   const load = useCallback(() => {
-    Promise.all([api.get<Stats>("/v1/stats"), api.get<OpsAgent[]>("/v1/ops/agents"), api.get<AgentRun[]>("/v1/runs?limit=15")])
+    Promise.all([api.get<Stats>("/v1/stats"), api.get<OpsAgent[]>("/v1/ops/agents?limit=100"), api.get<AgentRun[]>("/v1/runs?limit=15")])
       .then(([s, r, rr]) => { setStats(s); setRows(r); setRuns(rr); setError(""); })
       .catch((e) => setError((e as Error).message));
   }, []);

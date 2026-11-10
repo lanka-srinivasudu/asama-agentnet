@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from ..cache import get_cache
@@ -65,6 +66,22 @@ def _record(db: Session, agent: Agent, *, trigger: str, status: str, notificatio
     return run
 
 
+RETRYABLE_ERRORS = {"RateLimitError", "APITimeoutError", "APIConnectionError", "InternalServerError",
+                    "ServiceUnavailableError", "TimeoutException", "ConnectTimeout", "ReadTimeout", "ConnectError"}
+MAX_ATTEMPTS = 3
+
+
+def _retry_time(e: Exception, notification: Notification | None) -> datetime | None:
+    """Exponential backoff (10 s, 20 s, 40 s) for provider-side errors, while the notification is still fresh."""
+    if notification is None or not ({c.__name__ for c in type(e).__mro__} & RETRYABLE_ERRORS):
+        return None
+    attempts = notification.attempts or 1
+    if attempts >= MAX_ATTEMPTS:
+        return None
+    at = datetime.now(timezone.utc) + timedelta(seconds=10 * 2 ** (attempts - 1))
+    return at if at < _utc(notification.expires_at) else None
+
+
 def run_agent(db: Session, agent: Agent, post: Post | None, notification: Notification | None,
               trigger: str) -> AgentRun:
     t0 = time.perf_counter()
@@ -102,13 +119,26 @@ def run_agent(db: Session, agent: Agent, post: Post | None, notification: Notifi
             notification.error = res.get("error")
     except Exception as e:  # noqa: BLE001 - a broken agent must never crash the runtime
         db.rollback()
-        log.exception("agent %s failed", agent.handle)
         agent = db.get(Agent, agent.id)
         if notification is not None:
             notification = db.get(Notification, notification.id)
+        retry_at = _retry_time(e, notification)
+        if retry_at is not None:
+            # The provider is busy (429 / timeout / 5xx): not the agent's fault. Try again later instead of
+            # failing, and don't count it towards the circuit breaker.
+            log.warning("agent %s deferred: %s", agent.handle, type(e).__name__)
+            run = _record(db, agent, trigger=trigger, status="deferred", notification=notification, state=state,
+                          brain=brain, t0=t0, error=f"{type(e).__name__}: retry at {retry_at:%H:%M:%S}")
+            notification.status, notification.available_at, notification.claimed_at = "pending", retry_at, None
+            db.commit()
+            get_cache().publish({"type": "agent.run", "agent": agent.handle, "status": "deferred",
+                                 "action": None, "summary": run.summary[:160], "post_id": None})
+            return run
+        log.exception("agent %s failed", agent.handle)
         run = _record(db, agent, trigger=trigger, status="failed", notification=notification, state=state,
                       brain=brain, t0=t0, error=f"{type(e).__name__}: {str(e)[:300]}")
-        agent.consecutive_errors += 1
+        if not ({c.__name__ for c in type(e).__mro__} & RETRYABLE_ERRORS):
+            agent.consecutive_errors += 1        # provider outages don't trip the breaker; bad configs do
         if notification:
             notification.status, notification.error = "failed", run.summary
     if agent.consecutive_errors >= CIRCUIT_BREAKER_FAILURES:
@@ -127,7 +157,7 @@ def run_agent(db: Session, agent: Agent, post: Post | None, notification: Notifi
 def process_notification(notification_id: str) -> AgentRun | None:
     with SessionLocal() as db:
         n = db.get(Notification, notification_id)
-        if n is None or n.status != "pending":
+        if n is None or n.status not in ("pending", "processing"):
             return None
         now = datetime.now(timezone.utc)
         if _utc(n.expires_at) <= now:
@@ -144,32 +174,110 @@ def process_notification(notification_id: str) -> AgentRun | None:
             n.status, n.processed_at, n.decision_reason = "skipped", now, f"agent is {agent.status}"
             db.commit()
             return None
-        n.status = "processing"
-        db.commit()
-        return run_agent(db, agent, post, n, "notification")
+        # One run per agent at a time, across every worker process: an agent thinks about one thing at a
+        # time, so its cooldown / repeat / budget checks can't race each other.
+        lock = f"agent-run:{agent.id}"
+        if not get_cache().try_lock(lock, settings.lease_seconds):
+            n.status, n.claimed_at, n.available_at = "pending", None, now + timedelta(seconds=2)
+            db.commit()
+            return None
+        try:
+            if n.status == "pending":
+                n.attempts = (n.attempts or 0) + 1
+            n.status, n.claimed_at = "processing", now
+            db.commit()
+            return run_agent(db, agent, post, n, "notification")
+        finally:
+            get_cache().unlock(lock)
 
 
-def claim_pending(db: Session, limit: int) -> list[str]:
-    q = (select(Notification.id).where(Notification.status == "pending")
-         .order_by(Notification.score.desc(), Notification.created_at.asc()).limit(limit))
+def claim_pending(db: Session, limit: int, busy: set[str] | None = None) -> list[str]:
+    """Atomically lease up to `limit` notifications, at most one per agent.
+
+    Postgres: SELECT ... FOR UPDATE SKIP LOCKED + UPDATE status='processing' in one transaction, so
+    parallel workers never take the same row. A lease that isn't finished in LEASE_SECONDS (worker
+    crashed) is handed back by reap_expired_leases().
+    """
+    now = datetime.now(timezone.utc)
+    q = (select(Notification.id, Notification.agent_id)
+         .where(Notification.status == "pending",
+                or_(Notification.available_at.is_(None), Notification.available_at <= now))
+         .order_by(Notification.score.desc(), Notification.created_at.asc()).limit(limit * 3))
     if settings.is_postgres:
         q = q.with_for_update(skip_locked=True)
-    return list(db.scalars(q))
-
-
-def process_pending(limit: int = 20, max_rounds: int = 10) -> int:
-    """Process notifications until the queue is empty (chain reactions create new ones)."""
-    done = 0
-    for _ in range(max_rounds):
-        with SessionLocal() as db:
-            expire_stale(db)
-            ids = claim_pending(db, limit)
-            db.commit()
-        if not ids:
+    picked: list[str] = []
+    agents: set[str] = set(busy or ())          # agents already thinking in this worker are skipped
+    for nid, aid in db.execute(q).all():
+        if aid not in agents:
+            agents.add(aid)
+            picked.append(nid)
+        if len(picked) >= limit:
             break
-        for nid in ids:
-            if process_notification(nid) is not None:
-                done += 1
+    if picked:
+        db.execute(update(Notification).where(Notification.id.in_(picked))
+                   .values(status="processing", claimed_at=now, attempts=Notification.attempts + 1))
+    db.commit()
+    return picked
+
+
+def reap_expired_leases(db: Session) -> int:
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.lease_seconds)
+    res = db.execute(update(Notification).where(Notification.status == "processing",
+                                                Notification.claimed_at.isnot(None),
+                                                Notification.claimed_at < cutoff)
+                     .values(status="pending", claimed_at=None))
+    db.commit()
+    return res.rowcount or 0
+
+
+def process_pending(limit: int = 20, max_rounds: int = 10, concurrency: int | None = None) -> int:
+    """Process notifications until the queue is empty (chain reactions create new ones).
+
+    LLM calls are I/O-bound (seconds each), so each worker process runs `concurrency` agents in
+    parallel threads. SQLite (dev/tests) runs them one at a time.
+    """
+    workers = 1 if not settings.is_postgres else max(1, concurrency or settings.worker_concurrency)
+    if workers == 1:
+        done = 0
+        for _ in range(max_rounds):
+            with SessionLocal() as db:
+                expire_stale(db)
+                reap_expired_leases(db)
+                ids = claim_pending(db, limit)
+            if not ids:
+                break
+            done += sum(1 for nid in ids if process_notification(nid) is not None)
+        return done
+    return _drain_parallel(workers, max_runs=limit * max_rounds)
+
+
+def _drain_parallel(workers: int, max_runs: int) -> int:
+    """Keep `workers` agent runs in flight: as soon as one finishes, lease the next notification.
+
+    No batch barrier - a slow LLM call never holds up the other slots.
+    """
+    with SessionLocal() as db:
+        expire_stale(db)
+        reap_expired_leases(db)
+    done = claimed = 0
+    inflight: dict = {}                          # future -> agent id
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        while True:
+            free = min(workers - len(inflight), max_runs - claimed)
+            if free > 0:
+                with SessionLocal() as db:
+                    ids = claim_pending(db, free, busy=set(inflight.values()))
+                    owners = dict(db.execute(select(Notification.id, Notification.agent_id)
+                                             .where(Notification.id.in_(ids))).all()) if ids else {}
+                claimed += len(ids)
+                for nid in ids:
+                    inflight[pool.submit(process_notification, nid)] = owners.get(nid)
+            if not inflight:
+                break
+            finished, _ = wait(set(inflight), timeout=0.5, return_when=FIRST_COMPLETED)
+            for f in finished:
+                inflight.pop(f)
+                done += 1 if f.result() is not None else 0
     return done
 
 

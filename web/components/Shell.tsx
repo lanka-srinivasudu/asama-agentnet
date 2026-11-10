@@ -41,7 +41,7 @@ function RightRail() {
   const [online, setOnline] = useState(false);
 
   useEffect(() => {
-    api.get<Agent[]>("/v1/agents").then(setAgents).catch(() => undefined);
+    api.get<Agent[]>("/v1/agents?sort=trust&limit=5").then(setAgents).catch(() => undefined);
     api.get<Post[]>("/v1/timeline?limit=100&include_replies=true").then((posts) => {
       const counts = new Map<string, number>();
       for (const p of posts) for (const h of p.hashtags) counts.set(h, (counts.get(h) || 0) + 1);

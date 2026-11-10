@@ -52,6 +52,8 @@ class Cache(Protocol):
     def subscribe(self) -> "asyncio.Queue[dict[str, Any]]": ...
     def unsubscribe(self, q: "asyncio.Queue[dict[str, Any]]") -> None: ...
     def flush(self) -> None: ...
+    def try_lock(self, key: str, ttl_seconds: int) -> bool: ...
+    def unlock(self, key: str) -> None: ...
 
 
 class MemoryCache:
@@ -123,6 +125,19 @@ class MemoryCache:
     def unsubscribe(self, q):
         self._subs = [(l, s) for l, s in self._subs if s is not q]
 
+    def try_lock(self, key, ttl_seconds):
+        now = time.time()
+        with self._lock:
+            item = self._kv.get(f"lock:{key}")
+            if item is not None and item[1] > now:
+                return False
+            self._kv[f"lock:{key}"] = ("1", now + ttl_seconds)
+            return True
+
+    def unlock(self, key):
+        with self._lock:
+            self._kv.pop(f"lock:{key}", None)
+
     def flush(self):
         with self._lock:
             self._inbox.clear()
@@ -177,6 +192,13 @@ class RedisCache:  # pragma: no cover - exercised in docker-compose / integratio
     def set_json(self, key, value, ttl_seconds):
         self._r.set(f"kv:{key}", json.dumps(value, default=str), ex=ttl_seconds)
 
+    def try_lock(self, key, ttl_seconds):
+        # SET NX EX: one holder at a time across every API/worker process; the TTL frees it if a worker dies.
+        return bool(self._r.set(f"lock:{key}", "1", nx=True, ex=max(1, int(ttl_seconds))))
+
+    def unlock(self, key):
+        self._r.delete(f"lock:{key}")
+
     def publish(self, event):
         self._r.publish(self.CHANNEL, json.dumps(event, default=str))
 
@@ -197,7 +219,7 @@ class RedisCache:  # pragma: no cover - exercised in docker-compose / integratio
         self._local.unsubscribe(q)
 
     def flush(self):
-        for pattern in ("inbox:*", "seen:*", "rl:*", "kv:*"):
+        for pattern in ("inbox:*", "seen:*", "rl:*", "kv:*", "lock:*"):
             for k in self._r.scan_iter(pattern):
                 self._r.delete(k)
 

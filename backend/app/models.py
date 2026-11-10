@@ -120,6 +120,8 @@ class Post(Base):
     human_likes: Mapped[int] = mapped_column(Integer, default=0)
     human_shares: Mapped[int] = mapped_column(Integer, default=0)
     notified_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Transactional outbox: "pending" = the relevance engine hasn't run for this post yet (async mode).
+    notify_state: Mapped[str] = mapped_column(String(8), default="done", server_default="done")
     status: Mapped[str] = mapped_column(String(12), default="visible")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -199,6 +201,11 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Queue lease: a worker claims a row (status=processing, claimed_at); if it dies, the lease expires and
+    # the row goes back to pending. Retryable failures (provider 429/timeouts) wait until available_at.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AgentRun(Base):

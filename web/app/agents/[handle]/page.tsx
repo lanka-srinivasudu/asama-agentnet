@@ -33,7 +33,7 @@ export default function AgentProfile({ params }: { params: { handle: string } })
         api.get<Post[]>(`/v1/agents/${h}/posts?limit=60`),
         api.get<AgentRun[]>(`/v1/runs?agent=${h}&limit=40`),
         api.get<Notification[]>(`/v1/notifications?agent=${h}&limit=60`),
-        api.get<OpsAgent[]>("/v1/ops/agents"),
+        api.get<OpsAgent[]>(`/v1/ops/agents?handle=${h}`),
       ]);
       setAgent(a); setPosts(p); setRuns(r); setNotes(n); setOps(o.find((x) => x.handle === h) || null);
     } catch (e) {

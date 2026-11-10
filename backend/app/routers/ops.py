@@ -8,7 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..agents.graph import posts_today, tokens_used_today
+from ..agents.graph import _today_start
 from ..agents.runtime import process_pending, run_proactive
 from ..db import get_session
 from ..models import Agent, AgentRun, HumanReaction, Interaction, Notification, Post
@@ -112,25 +112,55 @@ def stats(db: Session = Depends(get_session)):
 
 
 @router.get("/ops/agents")
-def ops_agents(db: Session = Depends(get_session)):
-    """Per-agent health: is each autonomous agent actually doing its job?"""
+def ops_agents(handle: str | None = None, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
+               db: Session = Depends(get_session)):
+    """Per-agent health: is each autonomous agent actually doing its job?
+
+    Paginated (most recently active first) and computed with grouped queries over the page of agents,
+    so the cost depends on the page size, not on how many agents exist.
+    """
     now = datetime.now(timezone.utc)
     day = now - timedelta(hours=24)
+    q = select(Agent)
+    if handle:
+        q = q.where(Agent.handle == handle.lower())
+    else:
+        q = q.order_by(Agent.last_active_at.desc().nulls_last(), Agent.handle).offset(offset).limit(limit)
+    agents = list(db.scalars(q))
+    ids = [a.id for a in agents]
+    if not ids:
+        return []
+    by_status: dict[str, dict[str, int]] = {}
+    for aid, st, c in db.execute(select(Notification.agent_id, Notification.status, func.count()).where(
+            Notification.agent_id.in_(ids), Notification.created_at >= day)
+            .group_by(Notification.agent_id, Notification.status)):
+        by_status.setdefault(aid, {})[st] = c
+    reaction: dict[str, list[float]] = {}
+    for aid, created, processed in db.execute(select(Notification.agent_id, Notification.created_at,
+                                                     Notification.processed_at).where(
+            Notification.agent_id.in_(ids), Notification.created_at >= day, Notification.processed_at.is_not(None))):
+        reaction.setdefault(aid, []).append((_utc(processed) - _utc(created)).total_seconds())
+    runs: dict[str, dict[str, int]] = {}
+    for aid, st, c in db.execute(select(AgentRun.agent_id, AgentRun.status, func.count()).where(
+            AgentRun.agent_id.in_(ids), AgentRun.created_at >= day).group_by(AgentRun.agent_id, AgentRun.status)):
+        runs.setdefault(aid, {})[st] = c
+    today = _today_start()
+    tokens = dict(db.execute(select(AgentRun.agent_id, func.sum(AgentRun.tokens_in + AgentRun.tokens_out)).where(
+        AgentRun.agent_id.in_(ids), AgentRun.created_at >= today).group_by(AgentRun.agent_id)).all())
+    posts = dict(db.execute(select(Post.author_id, func.count()).where(
+        Post.author_id.in_(ids), Post.origin == "autonomous", Post.created_at >= today)
+        .group_by(Post.author_id)).all())
     out = []
-    for a in db.scalars(select(Agent).order_by(Agent.handle)):
-        ns = dict(db.execute(select(Notification.status, func.count()).where(
-            Notification.agent_id == a.id, Notification.created_at >= day).group_by(Notification.status)).all())
-        handled = [n for n in db.scalars(select(Notification).where(
-            Notification.agent_id == a.id, Notification.created_at >= day, Notification.processed_at.is_not(None)))]
-        reaction = [(_utc(n.processed_at) - _utc(n.created_at)).total_seconds() for n in handled]
-        runs = list(db.scalars(select(AgentRun).where(AgentRun.agent_id == a.id, AgentRun.created_at >= day)))
-        total = sum(ns.values())
+    for a in agents:
+        ns = by_status.get(a.id, {})
+        rs = runs.get(a.id, {})
+        total, n_runs, failed = sum(ns.values()), sum(rs.values()), rs.get("failed", 0)
         answered = ns.get("acted", 0) + ns.get("ignored", 0)
-        failed = sum(1 for r in runs if r.status == "failed")
+        rx = reaction.get(a.id, [])
         last = _utc(a.last_active_at)
         if a.status != "active":
             health = "paused"
-        elif failed and failed >= max(1, len(runs) // 2):
+        elif failed and failed >= max(1, n_runs // 2):
             health = "failing"
         elif ns.get("expired", 0) > answered:
             health = "lagging"
@@ -144,13 +174,38 @@ def ops_agents(db: Session = Depends(get_session)):
             "notifications_24h": total, "by_status": ns,
             "handled_rate": round(answered / total, 3) if total else None,
             "acted_rate": round(ns.get("acted", 0) / total, 3) if total else None,
-            "avg_reaction_s": round(sum(reaction) / len(reaction), 1) if reaction else None,
-            "runs_24h": len(runs), "failed_runs_24h": failed,
-            "posts_today": posts_today(db, a), "max_posts_per_day": a.max_posts_per_day,
-            "tokens_today": tokens_used_today(db, a), "daily_token_budget": a.daily_token_budget,
+            "avg_reaction_s": round(sum(rx) / len(rx), 1) if rx else None,
+            "runs_24h": n_runs, "failed_runs_24h": failed,
+            "posts_today": int(posts.get(a.id, 0)), "max_posts_per_day": a.max_posts_per_day,
+            "tokens_today": int(tokens.get(a.id) or 0), "daily_token_budget": a.daily_token_budget,
             "last_active_at": last, "web_access": bool(a.web_api_key_enc), "company_db": a.company_db_id,
         })
     return out
+
+
+@router.get("/ops/capacity")
+def capacity(db: Session = Depends(get_session)):
+    """Is the platform keeping up? Queue depth, oldest waiting run, outbox backlog and load-shedding level."""
+    now = datetime.now(timezone.utc)
+    pending = db.scalar(select(func.count()).select_from(Notification).where(Notification.status == "pending")) or 0
+    processing = db.scalar(select(func.count()).select_from(Notification)
+                           .where(Notification.status == "processing")) or 0
+    oldest = db.scalar(select(func.min(Notification.created_at)).where(Notification.status == "pending"))
+    outbox = db.scalar(select(func.count()).select_from(Post).where(Post.notify_state == "pending")) or 0
+    minute = now - timedelta(minutes=1)
+    runs_last_min = db.scalar(select(func.count()).select_from(AgentRun).where(AgentRun.created_at >= minute)) or 0
+    deferred = db.scalar(select(func.count()).select_from(AgentRun).where(
+        AgentRun.created_at >= now - timedelta(hours=1), AgentRun.status == "deferred")) or 0
+    from ..config import settings
+    from ..services.notify import queue_pressure
+    return {
+        "queue_pending": pending, "queue_processing": processing,
+        "oldest_pending_s": round((now - _utc(oldest)).total_seconds(), 1) if oldest else 0,
+        "outbox_pending_posts": outbox, "agent_runs_last_minute": runs_last_min,
+        "provider_deferrals_last_hour": deferred, "shed_level": queue_pressure(db),
+        "queue_soft_limit": settings.queue_soft_limit, "notify_mode": settings.notify_mode,
+        "worker_concurrency": settings.worker_concurrency,
+    }
 
 
 @router.post("/agents/{handle}/run")

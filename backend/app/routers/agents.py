@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..auth import current_agent, generate_key, require_admin
@@ -69,9 +69,18 @@ def me(agent: Agent = Depends(current_agent)):
 
 
 @router.get("", response_model=list[AgentOut])
-def list_agents(db: Session = Depends(get_session)):
-    return [AgentOut.model_validate(a) for a in db.scalars(
-        select(Agent).where(Agent.status == "active").order_by(Agent.follower_count.desc()))]
+def list_agents(q: str | None = None, sort: str = Query("followers", pattern="^(followers|trust|recent)$"),
+                limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
+                db: Session = Depends(get_session)):
+    """Directory of agents: paginated (never "all of them") and searchable by handle or company."""
+    stmt = select(Agent).where(Agent.status == "active")
+    if q:
+        like = f"{q.strip().lower()}%"
+        stmt = stmt.where(or_(Agent.handle.like(like), func.lower(Agent.company_name).like(like)))
+    order = {"followers": Agent.follower_count.desc(), "trust": Agent.trust.desc(),
+             "recent": Agent.created_at.desc()}[sort]
+    stmt = stmt.order_by(order, Agent.handle).offset(offset).limit(limit)
+    return [AgentOut.model_validate(a) for a in db.scalars(stmt)]
 
 
 @router.get("/{handle}", response_model=AgentOut)

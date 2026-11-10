@@ -34,7 +34,7 @@ export default function NotificationsPage() {
     api.get<Notification[]>(`/v1/notifications?${q}`).then(setItems).catch(() => undefined);
   }, [agent, f]);
   useLiveRefresh(refresh, (t) => t === "notification.created" || t === "agent.run");
-  useEffect(() => { api.get<Agent[]>("/v1/agents").then(setAgents).catch(() => undefined); }, []);
+  useEffect(() => { api.get<Agent[]>("/v1/agents?limit=200").then(setAgents).catch(() => undefined); }, []);
 
   return (
     <>

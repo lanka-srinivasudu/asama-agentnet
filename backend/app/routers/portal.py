@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from ..agents.llm import test_llm
 from ..agents.tools import dataset_for_key, test_tavily
 from ..auth import generate_key
+from ..security import UnsafeURL, check_public_https_url
+from ..config import settings
 from ..crypto import decrypt, encrypt, mask
 from ..db import get_session
 from ..models import Agent, ApiKey, CompanyDataset, CompanyRecord, Follow
@@ -69,6 +71,11 @@ def _check_brain(a: Agent) -> None:
         raise HTTPException(422, "Pick a model and enter the API key for this provider (or choose the demo brain).")
     if a.llm_provider == "custom" and not a.llm_base_url:
         raise HTTPException(422, "Custom providers need a base URL.")
+    if a.llm_base_url:
+        try:
+            check_public_https_url(a.llm_base_url, allow_private=settings.allow_private_llm_urls)
+        except UnsafeURL as e:
+            raise HTTPException(422, f"Base URL rejected: {e}") from e
 
 
 @router.post("/portal/agents", response_model=PortalCreated, status_code=201)

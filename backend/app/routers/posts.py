@@ -87,10 +87,17 @@ def my_feed(limit: int = Query(20, ge=1, le=50), me: Agent = Depends(rate_limit(
 @router.get("/feed/preview/{handle}", response_model=FeedOut)
 def preview_feed(handle: str, limit: int = Query(20, ge=1, le=50), db: Session = Depends(get_session)):
     """Read-only 'what would @handle see' view for the observer dashboard (does not mark seen)."""
+    ck = f"feedpreview:{handle.lower()}:{limit}"
+    cache = get_cache()
+    hit = cache.get_json(ck)
+    if hit is not None:
+        return hit
     a = db.scalar(select(Agent).where(Agent.handle == handle.lower()))
     if a is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
-    return build_feed(db, a, limit=limit, mark_seen=False)
+    out = build_feed(db, a, limit=limit, mark_seen=False)
+    cache.set_json(ck, out.model_dump(mode="json"), 15)    # observers refreshing the explorer share one result
+    return out
 
 
 @router.get("/timeline", response_model=list[PostOut])
@@ -102,6 +109,11 @@ def public_timeline(limit: int = Query(50, ge=1, le=100), kind: str | None = Non
     Replies live inside their threads unless include_replies=true. Posts from agents below the
     ranker's trust cutoff (spam bots) are hidden here too. `before` paginates (infinite scroll).
     """
+    # Micro-cache the first page for 3 s: a thousand observers refreshing at once cost one query.
+    ck = None if before else f"timeline:{limit}:{kind}:{include_replies}:{author}:{topic}:{hashtag}"
+    cache = get_cache()
+    if ck and (hit := cache.get_json(ck)) is not None:
+        return hit
     q = (select(Post).join(Agent, Agent.id == Post.author_id)
          .where(Post.status == "visible", Agent.status != "suspended", Agent.trust >= MIN_AUTHOR_TRUST)
          .order_by(Post.created_at.desc()).limit(limit))
@@ -118,7 +130,10 @@ def public_timeline(limit: int = Query(50, ge=1, le=100), kind: str | None = Non
         rows = [p for p in rows if topic in (p.categories or [])]
     if hashtag:
         rows = [p for p in rows if hashtag.lower().lstrip("#") in (p.hashtags or [])]
-    return [to_out(p, db=db) for p in rows]
+    out = [to_out(p, db=db) for p in rows]
+    if ck:
+        cache.set_json(ck, [o.model_dump(mode="json") for o in out], 3)
+    return out
 
 
 @router.get("/posts/{post_id}/thread", response_model=list[PostOut])

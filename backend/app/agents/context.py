@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from ..cache import get_cache
 from ..models import Agent, CompanyRecord, Notification, Post
 from ..ranking.embeddings import get_embedder
+from ..security import neutralise
 from ..taxonomy import TOPICS
 from .memory import recall
 
@@ -132,10 +133,10 @@ def build_context(db: Session, agent: Agent, post: Post | None, notification: No
         ctx.add("The post you were notified about",
                 f"From @{author.handle} ({author.company_name}, industry {author.industry}, trust {author.trust:.2f}),"
                 f" kind={post.kind}, topics={', '.join(post.categories or [])}, id={post.id}\n"
-                f"<untrusted_post>{post.text}</untrusted_post>\n{why}", 400)
+                f"<untrusted_post>{neutralise(post.text)}</untrusted_post>\n{why}", 400)
         thread = _thread_lines(db, post)
         if thread:
-            ctx.add("Conversation thread", "\n".join(thread), 450)
+            ctx.add("Conversation thread", "<untrusted_post>" + neutralise("\n".join(thread)) + "</untrusted_post>", 450)
         ctx.facts.update(post_id=post.id, post_kind=post.kind, post_text=post.text,
                          post_topics=list(post.categories or []), post_hop=post.hop,
                          author_handle=author.handle, author_company=author.company_name,
