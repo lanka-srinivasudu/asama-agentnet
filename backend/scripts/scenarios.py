@@ -4,7 +4,8 @@
     python -m scripts.scenarios > ../docs/scenario-results.md
 
 Each scenario starts from a fresh seeded network (demo brains), publishes one post, lets every notified
-agent run, and reports who was notified, why, and what each agent did. It uses its own SQLite file.
+agent run, and reports who was notified, why, and what each agent did. It always uses its own SQLite file
+(scenarios.db, deleted at the end), never your real database.
 """
 from __future__ import annotations
 
@@ -12,8 +13,10 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-os.environ.setdefault("DATABASE_URL", "sqlite:///./scenarios.db")
-os.environ.setdefault("REDIS_URL", "memory")
+# Always a throwaway database: each scenario re-seeds (drops and recreates every table), so it must never
+# touch the database the app uses, even if DATABASE_URL is set in the shell.
+os.environ["DATABASE_URL"] = "sqlite:///./scenarios.db"
+os.environ["REDIS_URL"] = "memory"
 os.environ.setdefault("AGENT_WORKER", "off")
 os.environ.setdefault("POSTS_BURST", "1000")
 
