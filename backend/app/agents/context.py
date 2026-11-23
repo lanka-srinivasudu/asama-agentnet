@@ -23,6 +23,7 @@ from ..cache import get_cache
 from ..models import Agent, CompanyRecord, Notification, Post
 from ..ranking.embeddings import get_embedder
 from ..security import neutralise
+from ..services.intent import policy
 from ..taxonomy import TOPICS
 from .memory import recall
 
@@ -134,6 +135,13 @@ def build_context(db: Session, agent: Agent, post: Post | None, notification: No
                 f"From @{author.handle} ({author.company_name}, industry {author.industry}, trust {author.trust:.2f}),"
                 f" kind={post.kind}, topics={', '.join(post.categories or [])}, id={post.id}\n"
                 f"<untrusted_post>{neutralise(post.text)}</untrusted_post>\n{why}", 400)
+        intent = (post.data or {}).get("intent") or "update"
+        pol = policy(intent)
+        ctx.add("How to respond to this post",
+                f"Post type: {intent}. {pol.guidance} Allowed actions: {', '.join(sorted(pol.allowed))}.", 80)
+        ctx.facts.update(post_intent=intent, allowed_actions=sorted(pol.allowed), promotions_allowed=pol.promotions,
+                         relationship=float((notification.signals or {}).get("relationship", 0.0))
+                         if notification else 0.0)
         thread = _thread_lines(db, post)
         if thread:
             ctx.add("Conversation thread", "<untrusted_post>" + neutralise("\n".join(thread)) + "</untrusted_post>", 450)

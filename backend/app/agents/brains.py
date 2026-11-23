@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ..services.intent import is_grief, is_thanks
 from .context import Context
 
 Action = Literal["ignore", "like", "reply", "quote", "post"]
@@ -34,6 +35,8 @@ class Draft(BaseModel):
 
 
 DECIDE_INSTRUCTION = """Decide your next move. Options: ignore, like, reply, quote, post.
+First read "How to respond to this post": choose ONLY an allowed action, and never promote offers where it
+says not to (announcements, alerts and sad news are not sales opportunities).
 Prefer reply/quote/post only when your company can add real value (a matching offer, data or answer).
 Check "What your company database has": if an item clearly helps the people reading this post (for example
 a ride to the cinema for a movie offer, or cashback for a purchase), that IS real value - quote or reply.
@@ -91,6 +94,19 @@ class DemoBrain:
         f = ctx.facts
         if proactive:
             return Decision(action="post", reason="Scheduled proactive post", db_query="offer", importance=3)
+        intent = f.get("post_intent", "update")
+        partner = f.get("mentioned") or f.get("relationship", 0) > 0
+        if intent == "announcement":
+            # Like a person would: partners congratulate, everyone else at most likes it.
+            return Decision(action="reply", reason="A partner's announcement: congratulate them", importance=4) \
+                if partner else Decision(action="like", reason="Good news from a company we know of", importance=2)
+        if intent == "sensitive":
+            return Decision(action="reply", reason="A partner's sad news: send condolences", importance=5) \
+                if partner else Decision(action="ignore", reason="Sensitive news; not our place to react", importance=2)
+        if intent == "alert":
+            return Decision(action="reply", reason="We were mentioned in an alert: offer help", importance=5) \
+                if f.get("mentioned") else Decision(action="ignore", reason="An alert we can't help with; no gloating",
+                                                    importance=2)
         post_topics = set(f.get("post_topics", []))
         mine = set(f.get("categories", []))
         wants = set(f.get("interests", []))
@@ -98,7 +114,7 @@ class DemoBrain:
         text = f.get("post_text", "").lower()
         kw = [k for k in f.get("keywords", []) if k.lower() in text]
         query = " ".join(kw + sorted(post_topics) + ([author_industry] if author_industry else []))
-        if f.get("post_kind") == "query" and (post_topics & mine or f.get("mentioned")):
+        if (f.get("post_kind") == "query" or intent == "question") and (post_topics & mine or kw or f.get("mentioned")):
             return Decision(action="reply", reason="A question in my area that my company can answer",
                             db_query=query, importance=6)
         if f.get("post_kind") in ("offer", "update") and author_industry in wants and not (post_topics & mine):
@@ -115,6 +131,18 @@ class DemoBrain:
 
     def compose(self, ctx: Context, decision: Decision, proactive: bool) -> Draft:
         f = ctx.facts
+        intent = f.get("post_intent")
+        if not proactive and intent in ("announcement", "sensitive", "alert"):
+            who, company = f.get("author_handle"), f.get("company", "We")
+            text = {"announcement": f"@{who} Congratulations from everyone at {company}! Wishing you great success.",
+                    "sensitive": f"@{who} Our heartfelt condolences from everyone at {company}.",
+                    "alert": f"@{who} Thanks for the heads-up. Our team is ready to help any affected customers."}
+            if intent == "announcement" and f.get("mentioned") and is_thanks(f.get("post_text", "")):
+                text["announcement"] = f"@{who} Thank you for the shoutout! Proud to be part of it."
+            if intent == "sensitive" and not is_grief(f.get("post_text", "")):
+                # a breach, an apology or layoffs: support, not condolences
+                text["sensitive"] = f"@{who} Sorry to hear this. {company} is here if we can help in any way."
+            return Draft(text=text[intent], kind="update", topics=list(f.get("categories", []))[:2])
         rows: list[dict] = f.get("db_results", [])
         company = f.get("company", "We")
         author = f.get("author_handle")

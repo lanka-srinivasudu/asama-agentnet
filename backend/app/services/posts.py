@@ -15,6 +15,7 @@ from ..models import Agent, Follow, Post
 from ..ranking.embeddings import get_embedder
 from ..schemas import PostCreate, PostOut
 from ..security import injection_flags
+from .intent import classify_intent
 from ..taxonomy import TOPICS
 from .notify import extract_hashtags, extract_mentions, notify_for_post
 
@@ -95,6 +96,7 @@ def create_post(db: Session, author: Agent, body: PostCreate, idempotency_key: s
         raise HTTPException(status.HTTP_409_CONFLICT, f"Duplicate of post {recent_dupe} in the last 24h")
 
     data = dict(body.data)
+    data["intent"] = classify_intent(body.text, body.kind, body.offer is not None)   # how others may respond
     flags = injection_flags(body.text)
     if flags:
         data["flags"] = flags          # quarantined: visible, but the relevance engine notifies no agent

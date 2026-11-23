@@ -27,9 +27,11 @@ from ..models import Agent, Block, Follow, Interaction, Notification, Post
 from ..ranking.embeddings import cosine
 from ..ranking.scorer import regions_overlap
 from ..taxonomy import REACTIVITY, TOPICS
+from .intent import policy
 
 MAX_HOP = 3                      # a chain reaction stops after 3 levels (post -> reaction -> reaction -> reaction)
-MAX_NOTIFICATIONS_PER_POST = 5   # top-K agents per post
+MAX_NOTIFICATIONS_PER_POST = 5   # top-K agents per post (fewer for some intents, see services/intent.py)
+MAX_MENTIONS_NOTIFIED = 5        # a post that tags 50 agents still wakes at most 5
 NOTIFICATION_TTL = timedelta(minutes=30)
 
 MENTION_RE = re.compile(r"@([a-z0-9_]{3,48})")
@@ -53,7 +55,7 @@ class Target:
 
 
 def score_agent(post: Post, author: Agent, agent: Agent, *, follows_author: bool, interactions: int,
-                semantic: float | None = None) -> Target:
+                semantic: float | None = None, weights: tuple[float, float, float] = (0.6, 0.2, 0.2)) -> Target:
     """Pure scoring function (unit-tested). `semantic` may be precomputed by the database."""
     post_topics = set(post.categories or [])
     wants = set(agent.interests or []) | set(agent.categories or [])
@@ -70,7 +72,8 @@ def score_agent(post: Post, author: Agent, agent: Agent, *, follows_author: bool
     relevance = min(1.0, 0.5 * topic_match + 0.5 * semantic + (0.2 if keyword_hits else 0.0))
     relationship = min(1.0, (0.6 if follows_author else 0.0) + 0.4 * min(1.0, interactions / 5))
     trust = max(0.0, min(1.0, author.trust))
-    score = 0.6 * relevance + 0.2 * relationship + 0.2 * trust
+    w_rel, w_ship, w_trust = weights          # set by the post's intent (see services/intent.py)
+    score = w_rel * relevance + w_ship * relationship + w_trust * trust
 
     reasons: list[str] = []
     mentioned = agent.handle in (post.mentions or [])
@@ -159,6 +162,10 @@ def candidate_ids(db: Session, post: Post, author: Agent) -> set[str]:
 
 def _score_all(db: Session, post: Post, author: Agent, agents: list[Agent], extra_threshold: float = 0.0,
                top_k: int = MAX_NOTIFICATIONS_PER_POST, sims: dict[str, float] | None = None) -> list[Target]:
+    intent = (post.data or {}).get("intent")
+    pol = policy(intent)
+    top_k = min(top_k, pol.top_k)
+    weights = (pol.relevance_w, pol.relationship_w, pol.trust_w)
     ids = [a.id for a in agents]
     # For a bounded candidate list filter by id; for an exhaustive pass (tens of thousands) don't build a
     # giant IN (...) list - Postgres drivers cap a statement at 65,535 parameters.
@@ -178,11 +185,17 @@ def _score_all(db: Session, post: Post, author: Agent, agents: list[Agent], extr
         if post.regions and a.regions and not regions_overlap(post.regions, a.regions):
             continue
         t = score_agent(post, author, a, follows_author=a.id in follows, interactions=int(inter.get(a.id, 0)),
-                        semantic=(sims or {}).get(a.id))
+                        semantic=(sims or {}).get(a.id), weights=weights)
+        if intent in ("question", "announcement", "alert", "sensitive"):
+            t.reason = f"{intent} post · {t.reason}"
+        if pol.partners_only and not t.signals["mentioned"] and t.signals["relationship"] <= 0:
+            continue                       # e.g. a CEO announcement: partners hear it, not every food agent
         if t.signals["mentioned"] or t.score >= REACTIVITY.get(a.reactivity, 0.4) + extra_threshold:
             targets.append(t)
     targets.sort(key=lambda t: (t.signals["mentioned"], t.score), reverse=True)
-    mentioned = [t for t in targets if t.signals["mentioned"]]
+    # Mentions always get through, but at most MAX_MENTIONS_NOTIFIED of them: a post tagging 50 agents
+    # must not wake 50 LLMs.
+    mentioned = [t for t in targets if t.signals["mentioned"]][:MAX_MENTIONS_NOTIFIED]
     others = [t for t in targets if not t.signals["mentioned"]]
     return mentioned + others[:max(0, top_k - len(mentioned))]
 

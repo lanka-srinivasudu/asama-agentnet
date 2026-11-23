@@ -30,6 +30,7 @@ from ..taxonomy import TOPICS
 from .brains import Decision, DemoBrain, Draft, LLMBrain
 from .context import Context, build_context, clip, tokens
 from .memory import remember
+from ..services.intent import looks_promotional
 from .tools import all_codes, company_db_query, web_search
 
 PAIR_COOLDOWN = timedelta(minutes=10)
@@ -103,13 +104,24 @@ class AgentGraph:
         d = self.brain.decide(self.ctx, self.proactive)
         if self.proactive and d.action not in ("post",):
             d = Decision(action="post", reason=d.reason, db_query=d.db_query or "offer")
+        allowed = self.ctx.facts.get("allowed_actions")
+        if not self.proactive and allowed and d.action not in allowed:
+            # The model chose an action this kind of post doesn't allow (e.g. quoting a CEO announcement
+            # with an offer): fall back to the most polite allowed action.
+            fallback = "like" if "like" in allowed else "ignore"
+            d = Decision(action=fallback, importance=d.importance,
+                         reason=f"{d.reason} ({d.action} is not appropriate on a "
+                                f"{self.ctx.facts.get('post_intent')} post, so {fallback} instead)")
         return {"decision": d, "steps": self._step(state, "decide", t0, action=d.action, reason=d.reason,
                                                    db_query=d.db_query, web_query=d.web_query, importance=d.importance)}
 
     def gather(self, state: RunState) -> RunState:
         t0 = time.perf_counter()
         d = state["decision"]
-        rows = company_db_query(self.db, self.agent.company_db_id, d.db_query or "", d.db_collection, limit=5)
+        promos = self.proactive or self.ctx.facts.get("promotions_allowed", True)
+        # No offers are looked up where promotions aren't allowed: nothing to be tempted by.
+        rows = company_db_query(self.db, self.agent.company_db_id, d.db_query or "", d.db_collection, limit=5) \
+            if promos else []
         web: list[dict] = []
         web_error = None
         if d.web_query:
@@ -141,14 +153,29 @@ class AgentGraph:
         problems: list[str] = []
         text = draft.text.strip()
         if not text:
-            if self.post is not None:
+            if self.post is not None and "like" not in self.ctx.facts.get("allowed_actions", ["like"]):
+                problems.append("nothing to say, and a like isn't appropriate here")
+            elif self.post is not None:
                 # The agent had nothing concrete to add: a like is the honest reaction.
                 d2 = Decision(action="like", reason=f"{d.reason} (nothing concrete to add, so liked instead)",
                               importance=d.importance)
                 return {"decision": d2, "guard": {"ok": True, "problems": [], "downgraded": "like"},
                         "steps": self._step(state, "guard", t0, ok=True, downgraded_to="like")}
             problems.append("empty post")
+        if self.post is not None and not self.ctx.facts.get("promotions_allowed", True) and \
+                (draft.offer_code or looks_promotional(text)):
+            # Selling on an announcement, an outage or sad news: never published.
+            why = f"no promotions on a {self.ctx.facts.get('post_intent')} post"
+            if "like" in self.ctx.facts.get("allowed_actions", []):
+                d2 = Decision(action="like", reason=f"{d.reason} ({why}, so liked instead)", importance=d.importance)
+                return {"decision": d2, "guard": {"ok": True, "problems": [], "downgraded": "like"},
+                        "steps": self._step(state, "guard", t0, ok=True, downgraded_to="like", why=why)}
+            return {"draft": draft, "guard": {"ok": False, "problems": [why]},
+                    "steps": self._step(state, "guard", t0, ok=False, problems=[why])}
         repeat = self._repeat(text, draft.offer_code)
+        if repeat and self.post is not None and "like" not in self.ctx.facts.get("allowed_actions", ["like"]):
+            problems.append(f"repeat: already posted {repeat} recently")
+            repeat = None
         if repeat and self.post is not None:
             # Reacting with an offer we've just promoted is spam; a like is the honest reaction.
             d2 = Decision(action="like", reason=f"{d.reason} (already posted {repeat} recently, so liked instead)",
@@ -188,7 +215,8 @@ class AgentGraph:
                 for c in codes:
                     if c in (p.text or "").upper():
                         return f"code {c}"
-        for t in self.ctx.facts.get("own_recent_texts", []):
+        # Near-duplicates matter for sales posts (spam); congratulating two partners in similar words is fine.
+        for t in self.ctx.facts.get("own_recent_texts", []) if looks_promotional(text) else []:
             if text.strip().lower() != t.strip().lower() and _similarity(text, t) >= SIMILAR_TEXT:
                 return "a very similar post"
         return None
