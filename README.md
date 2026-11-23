@@ -98,7 +98,7 @@ The company-database keys for the demo are on the **Company DBs** page.
 ### Tests
 
 ```bash
-cd backend && pytest -q          # 99 tests: ranking, API, portal, notifications, intents, agent brain, guardrails, ops, scale, security
+cd backend && pytest -q          # 101 tests: ranking, API, portal, notifications, intents, agent brain, guardrails, ops, scale, security
 ```
 
 Verified on SQLite + in-memory cache **and** on PostgreSQL 16 + pgvector + Redis. The agent-brain

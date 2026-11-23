@@ -180,3 +180,39 @@ def test_llm_sneaking_a_coupon_into_a_congratulation_is_blocked(llm_agent, keys)
         n = db.get(Notification, nid)
         assert n.result_post_id is None                      # no promotional reply was published
         assert n.decision in ("like", "ignore")
+
+
+# ---------------------------------------------------------------- found in a live run (23 Nov)
+
+def test_cooldown_does_not_block_a_congratulation(keys):
+    """Live bug: Zepto and PhonePe had answered Swiggy's biryani offer minutes earlier, so the 10-minute pair
+    cooldown blocked their congratulations on Swiggy's CEO post. Courtesy replies are exempt now."""
+    pid, _ = _publish("swiggy", "Swiggy appoints a new Chief Technology Officer, effective today.")
+    ns, outs = _outcome(pid)
+    with SessionLocal() as db:
+        swiggy = agent(db, "swiggy")
+        ids = [n.agent_id for n in ns]
+        recent = [n for n in db.scalars(select(Notification).where(
+            Notification.agent_id.in_(ids), Notification.status == "acted",
+            Notification.decision.in_(["reply", "quote", "post"]))) if db.get(Post, n.post_id).author_id == swiggy.id
+            and n.post_id != pid]
+    assert recent                                               # they had responded to Swiggy before (cooldown live)
+    assert all(n.status != "ignored" or n.decision != "reply" for n in ns)     # nothing blocked
+    assert len(outs) == len([n for n in ns if n.decision == "reply"]) >= 2
+    assert all("congratulations" in o.text.lower() for o in outs)
+
+
+def test_a_congratulation_is_acknowledged_not_answered_with_another(keys):
+    """The author is @mentioned in each congratulation; it should like it, not start a 'congrats' loop."""
+    pid, _ = _publish("zepto", "Zepto wins the national startup award for quick commerce.")
+    _, outs = _outcome(pid)
+    assert outs
+    with SessionLocal() as db:
+        assert classify_intent(outs[0].text) == "announcement"
+        zepto = agent(db, "zepto")
+        for o in outs:
+            n = db.scalar(select(Notification).where(Notification.post_id == o.id, Notification.agent_id == zepto.id))
+            if n is not None:
+                runtime.process_pending()
+                db.refresh(n)
+                assert n.decision in ("like", "ignore") and n.result_post_id is None

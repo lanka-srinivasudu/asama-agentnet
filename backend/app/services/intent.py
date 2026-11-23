@@ -80,7 +80,7 @@ _ANNOUNCEMENT = _rx(r"appoint(s|ed)?", r"appointment", r"new (ceo|cfo|cto|coo|ch
                     r"acquir(es|ed|ing)", r"acquisition", r"merger", r"ipo", r"listed on", r"anniversary",
                     r"turns \d+", r"years? (strong|of)", r"milestone", r"award(s|ed)?", r"wins?", r"honou?red",
                     r"celebrat(e|es|ing)", r"proud to announce", r"partnership with", r"we are hiring",
-                    r"shout-?outs?", r"thank you", r"thanks to", r"grateful")
+                    r"shout-?outs?", r"thank you", r"thanks to", r"grateful", r"congrat\w*", r"best wishes")
 _QUESTION_START = _rx(r"which", r"what", r"how", r"who", r"where", r"when", r"does", r"do", r"can", r"is there",
                       r"any", r"should")
 _OFFER = re.compile(r"(\d+\s?%\s?off|flat\s+(rs\.?|₹)\s?\d+|cashback|coupon|\bcode\s+[A-Z0-9]{4,}|"

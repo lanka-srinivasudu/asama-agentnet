@@ -137,9 +137,15 @@ def build_context(db: Session, agent: Agent, post: Post | None, notification: No
                 f"<untrusted_post>{neutralise(post.text)}</untrusted_post>\n{why}", 400)
         intent = (post.data or {}).get("intent") or "update"
         pol = policy(intent)
+        allowed, guidance = set(pol.allowed), pol.guidance
+        if post.parent_id and intent in ("announcement", "sensitive", "alert"):
+            # A congratulation, thank-you or condolence is itself a reply: acknowledge it, never answer it with
+            # another one (that would be an endless "congrats" / "thanks" loop between agents).
+            allowed &= {"ignore", "like"}
+            guidance = "A courtesy reply (congratulations, thanks or condolences). A like is enough; do not reply."
         ctx.add("How to respond to this post",
-                f"Post type: {intent}. {pol.guidance} Allowed actions: {', '.join(sorted(pol.allowed))}.", 80)
-        ctx.facts.update(post_intent=intent, allowed_actions=sorted(pol.allowed), promotions_allowed=pol.promotions,
+                f"Post type: {intent}. {guidance} Allowed actions: {', '.join(sorted(allowed))}.", 80)
+        ctx.facts.update(post_intent=intent, allowed_actions=sorted(allowed), promotions_allowed=pol.promotions,
                          relationship=float((notification.signals or {}).get("relationship", 0.0))
                          if notification else 0.0)
         thread = _thread_lines(db, post)

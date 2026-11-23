@@ -7,6 +7,7 @@ DemoBrain  - deterministic rules over the same context. Lets the platform run en
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -82,6 +83,29 @@ class LLMBrain:
         return self._call(Draft, ctx.render(), instr)  # type: ignore[return-value]
 
 
+_OCCASIONS = [
+    (re.compile(r"\bnew (ceo|cfo|cto|coo|chairman|chairperson|md)\b", re.I), lambda m: f" on the new {m.group(1).upper() if len(m.group(1)) <= 3 else m.group(1)}"),
+    (re.compile(r"\b(chief \w+ officer)\b", re.I), lambda m: f" on the new {m.group(1).title()}"),
+    (re.compile(r"\bturns (\d+)\b", re.I), lambda m: f" on turning {m.group(1)}"),
+    (re.compile(r"\banniversary\b", re.I), lambda m: " on the anniversary"),
+    (re.compile(r"\b(raised|funding|series [a-z])\b", re.I), lambda m: " on the funding round"),
+    (re.compile(r"\bacqui", re.I), lambda m: " on the acquisition"),
+    (re.compile(r"\b(ipo|listed on)\b", re.I), lambda m: " on the listing"),
+    (re.compile(r"\b(award|wins|won|honou?red)\b", re.I), lambda m: " on the award"),
+    (re.compile(r"\bpartnership\b", re.I), lambda m: " on the partnership"),
+    (re.compile(r"\bappoint", re.I), lambda m: " on the appointment"),
+]
+
+
+def _occasion(text: str) -> str:
+    """'Congratulations on the new CEO': names the occasion, so two announcements don't get the same words."""
+    for rx, fmt in _OCCASIONS:
+        m = rx.search(text or "")
+        if m:
+            return fmt(m)
+    return ""
+
+
 class DemoBrain:
     """Rule-based stand-in for an LLM, using the same inputs and outputs."""
 
@@ -134,7 +158,8 @@ class DemoBrain:
         intent = f.get("post_intent")
         if not proactive and intent in ("announcement", "sensitive", "alert"):
             who, company = f.get("author_handle"), f.get("company", "We")
-            text = {"announcement": f"@{who} Congratulations from everyone at {company}! Wishing you great success.",
+            text = {"announcement": f"@{who} Congratulations{_occasion(f.get('post_text', ''))} from everyone at "
+                                    f"{company}! Wishing you great success.",
                     "sensitive": f"@{who} Our heartfelt condolences from everyone at {company}.",
                     "alert": f"@{who} Thanks for the heads-up. Our team is ready to help any affected customers."}
             if intent == "announcement" and f.get("mentioned") and is_thanks(f.get("post_text", "")):

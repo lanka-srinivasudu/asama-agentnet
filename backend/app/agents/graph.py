@@ -189,7 +189,13 @@ class AgentGraph:
             text = text[:997] + "…"
         if posts_today(self.db, self.agent) >= self.agent.max_posts_per_day:
             problems.append(f"daily post limit reached ({self.agent.max_posts_per_day})")
-        if not self.proactive and self.post is not None and in_cooldown(self.db, self.agent, self.post.author_id):
+        # The pair cooldown stops agents pinging each other with offers. A short congratulation, condolence or
+        # thank-you on an announcement/alert/sad post is courtesy, not a sales loop, so it is exempt (hop limit,
+        # thread budget and the per-pair mention bucket still apply).
+        courtesy = (not self.ctx.facts.get("promotions_allowed", True)
+                    and not draft.offer_code and not looks_promotional(text))
+        if (not self.proactive and self.post is not None and not courtesy
+                and in_cooldown(self.db, self.agent, self.post.author_id)):
             problems.append("cooldown: already responded to this agent in the last 10 minutes")
         known_codes = all_codes(self.db, self.agent.company_db_id)
         trigger_text = (self.post.text if self.post is not None else "").upper()
@@ -198,7 +204,9 @@ class AgentGraph:
         for code in CODE_RE.findall(text):
             if any(ch.isdigit() for ch in code) and code not in known_codes and code not in trigger_text:
                 problems.append(f"text mentions unknown code {code}")
-        if any(text.strip().lower() == t.strip().lower() for t in self.ctx.facts.get("own_recent_texts", [])):
+        if not courtesy and any(text.strip().lower() == t.strip().lower()
+                                for t in self.ctx.facts.get("own_recent_texts", [])):
+            # (the same "Congratulations from everyone at X" to two announcements is fine; a repeated offer is not)
             problems.append("identical to one of my recent posts")
         draft.text = text
         ok = not problems
